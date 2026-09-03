@@ -57,7 +57,18 @@ function requireLogin(req, res, next) {
     // (live-observed: a redirect_url of "/showcase.html?..." sent someone
     // back to accounts.<domain>/showcase.html, a 404, not the calling
     // app). Build the full absolute URL the request actually came in on.
-    const returnTo = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    //
+    // req.protocol alone reports "http" for every service here, even
+    // behind Cloudflare over real https -- Cloudflare's tunnel terminates
+    // TLS at the edge and forwards to the app over plain HTTP, and none
+    // of these services set Express's `trust proxy`, so req.protocol
+    // reflects the literal (internal, plain-HTTP) socket rather than what
+    // the browser actually used. Read X-Forwarded-Proto directly instead
+    // of depending on every consumer remembering `trust proxy` -- this is
+    // the shared middleware, so it should be correct by default for the
+    // deployment shape every service here actually has.
+    const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const returnTo = `${proto}://${req.get('host')}${req.originalUrl}`;
     return res.redirect(`${base}?redirect_url=${encodeURIComponent(returnTo)}`);
   }
   next();
