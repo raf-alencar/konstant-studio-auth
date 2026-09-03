@@ -50,7 +50,15 @@ function requireLogin(req, res, next) {
   const auth = getAuth(req);
   if (!auth?.userId) {
     const base = process.env.CLERK_SIGN_IN_URL || 'https://accounts.clerk.dev/sign-in';
-    return res.redirect(`${base}?redirect_url=${encodeURIComponent(req.originalUrl)}`);
+    // req.originalUrl is relative (e.g. "/showcase.html?x=1") -- it carries
+    // no scheme or host. Clerk's hosted sign-in has no way to know that
+    // path belongs to the calling app's own domain, so a bare relative
+    // redirect_url resolves against the sign-in page's OWN origin instead
+    // (live-observed: a redirect_url of "/showcase.html?..." sent someone
+    // back to accounts.<domain>/showcase.html, a 404, not the calling
+    // app). Build the full absolute URL the request actually came in on.
+    const returnTo = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    return res.redirect(`${base}?redirect_url=${encodeURIComponent(returnTo)}`);
   }
   next();
 }
