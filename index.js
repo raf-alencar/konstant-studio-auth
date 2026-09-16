@@ -26,8 +26,18 @@ function superadminOnly(req, res, next) {
 }
 
 function getBrandId(req) {
+  // A superadmin with no orgId (a headless m2m/system caller, or a
+  // superadmin session with no org claim at all) genuinely has no default
+  // brand -- an explicit ?brand_id= is required. But a superadmin who IS a
+  // real org member (Clerk's own orgId claim present) should default to
+  // their own org's brand like anyone else, with ?brand_id= still available
+  // to override and look at another org. Treating every superadmin as "no
+  // org context" left a real, correctly authenticated superadmin's own
+  // brand picker and accounts page empty by default (live 2026-09-16,
+  // rafalencar.com -- a superadmin flag on a real user's account, not just
+  // m2m keys, is a real case this needs to handle).
   if (req.auth?.isSuperadmin) {
-    return req.query.brand_id ?? null;
+    return req.query.brand_id ?? req.auth?.orgId ?? null;
   }
   return req.auth?.orgId ?? null;
 }
