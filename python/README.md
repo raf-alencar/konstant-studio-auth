@@ -48,6 +48,50 @@ AuthState(
 )
 ```
 
+## v2 — control-plane authorization
+
+> **Login is identity, not authority.** v2 asks the stighive-platform control plane what a principal may do, per service, per action, per tenant. v1 (everything above) is unchanged and is never imported by v2: an app that does not use v2 needs no new dependency. The model, the offline/live split and the failure behaviour are the same as the Node package's, see the root [README](../README.md#v2--control-plane-authorization); this section is the Python surface.
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import Depends, FastAPI
+from konstant_studio_auth.v2 import create_auth
+
+auth = create_auth(service="docs")   # reads the environment (see the root README / .env.example)
+
+@asynccontextmanager
+async def lifespan(app):
+    auth.start()                      # change-feed polling needs the running loop
+    yield
+    await auth.close()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post("/render")
+async def render(d=Depends(auth.require_permission(
+        "docs:render",
+        tenant=lambda request: request.path_params.get("tenant"),   # str, or a (sync or async) callable(request)
+        brand=lambda request: request.headers.get("x-brand"),
+))):
+    d.principal        # Principal(kind, id, user_id, tenant, ancestry, roles, permissions, key_id, ...)
+    return {"tenant": d.tenant_id, "roles": d.roles}
+
+@app.post("/approve")
+async def approve(d=Depends(auth.require_approver("social:approve", step_up=True,
+                                                  tenant=lambda r: r.path_params.get("tenant")))):
+    ...
+```
+
+- Exposed as `auth.fastapi.*` and as top-level aliases: `require_permission`, `require_approver`, `require_service_route`, `events_webhook(secret)`, `assert_tenant(request, tenant_id)`, `usage_context(request)`.
+- On success: `request.state.principal`, `request.state.auth_decision`, and a v1-shaped `request.state.auth` (`is_superadmin` is always `False`).
+- On failure: `HTTPException` 401 (credential; `WWW-Authenticate: Bearer`), 403 (decision), 503 (could not decide; `Retry-After: 5`). `detail` is `{"error": ..., "reason": ...}` (plus `upgrade_url` for `not_entitled`).
+- Core API (no FastAPI needed): `await auth.authorize(headers=..., permission="docs:read", resource={"tenant": ...})` returns a result with `allow`, `reason`, `status`, `principal`, `tenant_id`, `via_tenant`, `roles`, `sensitive`, `source` (`offline` / `live` / `none`), `stale`; it never raises for an auth failure.
+- Options are the Node options in snake_case: `platform_url`, `platform_key`, `clerk={issuer, jwks_url, authorized_parties, audience}`, `snapshot={ttl_seconds, stale_read_ttl_seconds}`, `poll_interval_seconds`, `tenant_resolver`, `on_event`, `service_keys="stub"|"platform"`, `step_up_max_age_minutes`. Tests inject `transport=` / `http_client=` and `now=`.
+- Clerk verification uses `python-jose` (already a dependency): RS256 only, issuer pinned, mandatory `azp`, no new package.
+- Service keys (`stgs_`) are a documented stub until the platform's C0b2; see the root README.
+
+Tests: `pytest python/tests` (shared vectors + units + the FastAPI adapter, no network); `REQUIRE_SCRATCH=1 pytest python/tests/e2e` runs the parity test and a sample app against a scratch copy of the platform branch (`scripts/scratch_platform.py`).
+
 ## Usage
 
 ```python

@@ -34,10 +34,10 @@ Copy the env vars from [.env.example](./.env.example) into each service's `.env`
 | `protect`         | Require a valid Clerk session. Sets `req.auth`.                         |
 | `superadminOnly`  | Restrict route to users with `publicMetadata.superadmin === true`.      |
 | `getBrandId`      | Return the brand id (`orgId`) to scope DB queries by.                   |
-| `m2mAuth`         | API-key auth for workers and n8n. Checks `X-API-Key` against `INTERNAL_API_KEY`. |
+| `m2mAuth`         | **Deprecated.** API-key auth for workers and n8n. Checks `X-API-Key` against `INTERNAL_API_KEY`. |
 | `protectOrM2M`    | Accept either a Clerk session or an API key.                            |
 | `requireLogin`    | For HTML pages — redirect to Clerk hosted login if no session.          |
-| `requireService`  | Factory — gate routes on the caller's org being entitled to a service.  |
+| `requireService`  | **Deprecated.** Factory — gate routes on the caller's org being entitled to a service. |
 
 After `protect` (or `m2mAuth`), `req.auth` is:
 
@@ -95,14 +95,16 @@ app.get('/api/admin/brands', protect, superadminOnly, async (req, res) => {
 
 ### `getBrandId` — brand scoping
 
-- Superadmin: returns `req.query.brand_id ?? null` (null = all brands).
+- Superadmin: returns `req.query.brand_id ?? req.auth.orgId ?? null` — an explicit `?brand_id=` wins, a superadmin who is a real org member defaults to their own org, and `null` (a headless m2m caller or an org-less superadmin session) means "no default brand".
 - Client: returns their `orgId`, never overrideable.
 
 ```js
 const brandId = getBrandId(req);
 ```
 
-### `m2mAuth` — workers and n8n
+### `m2mAuth` — workers and n8n *(deprecated)*
+
+> Deprecated: shared-key auth. Still supported; removal is tied to the platform's `ACCEPT_SHARED_KEY=false` cutover (decided by the CoS). Use per-service keys and [v2](#v2--control-plane-authorization). Prints one `DeprecationWarning` per process (`KSA_SILENCE_DEPRECATIONS=1` silences it).
 
 Caller sends `X-API-Key: <INTERNAL_API_KEY>`. No Clerk session involved.
 
@@ -136,7 +138,9 @@ app.use('/queue',     requireLogin);
 
 Set `CLERK_SIGN_IN_URL` to override the default redirect target.
 
-### `requireService` — service-entitlement gate
+### `requireService` — service-entitlement gate *(deprecated)*
+
+> Deprecated: checks entitlement only, through the legacy `/entitlements/{org}` endpoint with the shared key. `requirePermission` in v2 checks entitlement **and** permission.
 
 `requireService('slug')` returns a middleware that asks the platform API whether the caller's org is entitled to the named service. Wire `protect` (or `protectOrM2M`) before it so `req.auth` is populated.
 
@@ -220,7 +224,101 @@ Register the endpoint in Clerk Dashboard → Webhooks → Add endpoint:
 
 Copy the signing secret into `CLERK_WEBHOOK_SECRET`.
 
-## Environment variables
+## v2 — control-plane authorization
+
+> **Login is identity, not authority.** Clerk proves who someone is. What they may do is decided per service, per action, per tenant by the [control plane](https://github.com/raf-alencar/stighive-platform) (stighive-platform): entitlements, a permission matrix, scoped memberships, keys. v2 is how an app asks it. v1 (everything above) keeps working unchanged; adopt v2 per app, per the [adoption checklist](./docs/ADOPTION-CHECKLIST.md) and the [migration guide](./docs/MIGRATION.md).
+
+```js
+const { createAuth } = require('@konstant-studio/auth/v2');   // also: require('@konstant-studio/auth').createAuth
+
+const auth = createAuth({ service: 'docs' }).start();          // reads the environment below
+
+// Express: deny by default; the permission is `service:action`, the scope says what it is about.
+app.post('/render',
+  auth.express.requirePermission('docs:render', {
+    tenant: (req) => req.params.tenant,      // or leave out and send x-tenant / use a tenantResolver
+    brand:  (req) => req.body?.brand,
+  }),
+  (req, res) => {
+    req.principal;                            // { kind, id, userId, tenant, ancestry, roles, permissions, keyId, ... }
+    auth.express.usageContext(req);           // { tenant_id, actor, run_id } for usage events
+    res.json({ ok: true });
+  });
+
+// Approvals: a human, holding the permission, with a recent second factor.
+app.post('/approve', auth.express.requireApprover('social:approve', { stepUp: true, tenant: (req) => req.params.tenant }), handler);
+```
+
+```js
+// Next.js route handler (App Router) — plain Request/Response, no dependency on Next.
+export const GET = auth.next.withPermission('crm:read',
+  { tenant: (req) => new URL(req.url).searchParams.get('tenant') },
+  async (req, ctx, { principal, decision }) => Response.json({ tenant: decision.tenantId }));
+```
+
+FastAPI and the Python API: see [python/README.md](./python/README.md).
+
+### What it does
+
+1. **One Principal for every credential.** A Clerk session token (from `Authorization: Bearer`, or the `__session` cookie), an agent key (`stga_`), a guest key (`stgg_`), an MCP key (`stig_`) or a service key (`stgs_`) all resolve to the same object. A bearer that is not a known key goes to Clerk validation and, if it is not a valid session, gets a clean `401` (this is what unblocks the CRM iOS path).
+2. **Clerk tokens are verified offline**: RS256 only, issuer pinned, `exp`/`iat`/`sub` required, **`azp` mandatory** and must be one of `CLERK_AUTHORIZED_PARTIES`; the library refuses to start without that list.
+3. **Decisions come from the platform, never from local role tables.**
+
+   | Request | Decided |
+   |---|---|
+   | Human Clerk session, this service's own **non-sensitive** permission, tenant named | **offline**, from a cached snapshot (ETag + TTL, refreshed on change events) |
+   | Any **sensitive** action, any agent / guest / MCP key, another service's permission, or **no tenant named** | **live**, `POST /v1/authorize` — one call |
+
+   Offline decisions are proven equal to the platform's by the [parity test](#tests). A key is never cached, so revocation is immediate.
+4. **Fail closed.** Platform unreachable: sensitive actions and key checks → `503`; read checks are served from the cache for at most `SNAPSHOT_STALE_READ_TTL_SECONDS` (default 300), then `503`; other routine checks → `503`. A `503` means "could not decide" and carries `Retry-After`; it is never an allow.
+5. **Tenant.** Named by the `tenant` scope, else the `x-tenant` header, else your `tenantResolver(req, principal)` (use it to map a Clerk org to a tenant until the platform's snapshot carries `org_id`). With none named and several memberships the platform answers `tenant_required`. A tenant that is not a UUID can never name a tenant: it is denied (`tenant_not_found`) without calling the platform.
+6. **Events.** `onEvent(e)` receives one `auth.decision` event per check (ids and the decision only — never a token, header or key). `usageContext(req)` gives the actor for usage events (event contract: "Usage ledger design").
+
+Responses: `401 {error, reason}` for a credential problem, `403 {error, reason}` for a decision (`not_entitled` adds `upgrade_url`), `503` when it could not decide.
+
+### Service keys (`stgs_`) — status
+
+The end state is that the platform resolves a service key into a `service` principal (`{kind:'service', service, routes, tenant:null}`: denied by default for every tenant-scoped permission, never an approver, only the routes on its allow-list). The platform's C0b2 change that does this has not landed; until it does, `service-keys.js` is a **stub that answers `401 unsupported_credential`**, exactly like the platform. Switch with `serviceKeys: 'platform'` / `AUTH_SERVICE_KEYS=platform` after C0b2 is accepted. The matching vectors are marked `pending-platform`.
+
+### Environment
+
+| Var | Purpose |
+|---|---|
+| `PLATFORM_API_URL` | Base URL of the control plane (tailnet). |
+| `PLATFORM_SERVICE_KEY` | This service's own `stgs_` key, bound to its catalog service. Falls back to `INTERNAL_API_KEY` (deprecated). |
+| `CLERK_ISSUER`, `CLERK_JWKS_URL` | Public values of the Clerk instance (JWKS defaults to `<issuer>/.well-known/jwks.json`). |
+| `CLERK_AUTHORIZED_PARTIES` | **Required** with Clerk: comma-separated frontend origins allowed as `azp`. |
+| `CLERK_AUDIENCE` | Only if your session tokens carry an `aud`. |
+| `AUTH_SERVICE` | The catalog service this app is (or `createAuth({ service })`). |
+| `SNAPSHOT_TTL_SECONDS` / `SNAPSHOT_STALE_READ_TTL_SECONDS` | Cache lifetime / how long reads survive a platform outage (defaults 30 / 300; the snapshot's own values win). |
+| `AUTH_EVENT_POLL_SECONDS` | Change-feed poll interval (default 5; `0` disables). |
+| `AUTH_STEP_UP_MAX_AGE_MINUTES` | Max age of the second factor for `stepUp` (default 10). |
+| `AUTH_SERVICE_KEYS` | `stub` (default) or `platform`. |
+
+Step-up reads Clerk's `fva` session claim (`[minutes since first factor, minutes since second]`, `-1` = none). **Not yet confirmed against this Clerk instance's token shape**: if `fva` is absent, step-up is denied, never assumed.
+
+### Optional: change-event webhook
+
+Polling is on by default. To also receive the platform's signed webhook (a *hint* to refresh; the refresh itself is the normal conditional GET):
+
+```js
+app.post('/_platform/events', express.raw({ type: 'application/json' }), auth.eventsWebhook({ secret: process.env.PLATFORM_EVENTS_SECRET }));
+```
+
+### Tests
+
+```bash
+npm test            # shared vectors + unit + v1 compatibility (no network)
+npm run test:smoke  # pack the tarball, install it into a scratch project, load it like the adopters do
+# parity + sample apps against a scratch copy of the platform branch:
+python scripts/scratch_platform.py start --platform-dir <copy of the C0b branch> --database-url postgresql://postgres@127.0.0.1:55433/cptest_x
+npm run test:e2e
+python scripts/scratch_platform.py stop
+```
+
+`test-vectors/vectors.json` is the shared fixture (one file for Node and Python; adopting repos reuse it as acceptance tests). The scratch harness refuses any database that is not local and named `cptest*`, binds 127.0.0.1 only, and uses fake secrets generated per run.
+
+## Environment variables (v1)
 
 See [.env.example](./.env.example).
 

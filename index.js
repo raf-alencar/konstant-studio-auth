@@ -1,5 +1,23 @@
 const { clerkMiddleware, getAuth } = require('@clerk/express');
 
+// ---------------------------------------------------------------------------
+// Deprecations. Nothing here changes behaviour: each notice is printed once per
+// process (a standard Node DeprecationWarning, so `--no-deprecation` or
+// KSA_SILENCE_DEPRECATIONS=1 silences it) and points at the v2 replacement.
+// ---------------------------------------------------------------------------
+
+const _warned = new Set();
+function _deprecated(code, message) {
+  if (_warned.has(code) || process.env.KSA_SILENCE_DEPRECATIONS === '1') return;
+  _warned.add(code);
+  process.emitWarning(message, 'DeprecationWarning', code);
+}
+
+const _SHARED_KEY_REMOVAL =
+  'The shared-key path (INTERNAL_API_KEY / X-API-Key) stays supported until the platform ' +
+  'cutover (ACCEPT_SHARED_KEY=false, decided by the CoS); migrate to per-service keys and ' +
+  "require('@konstant-studio/auth/v2'). See docs/MIGRATION.md.";
+
 function setupClerk() {
   return clerkMiddleware();
 }
@@ -42,7 +60,13 @@ function getBrandId(req) {
   return req.auth?.orgId ?? null;
 }
 
+/**
+ * @deprecated Shared-key auth. Use a per-service key with `createAuth()` from
+ * `@konstant-studio/auth/v2`. Behaviour is unchanged. Removal is tied to the
+ * platform's `ACCEPT_SHARED_KEY=false` cutover.
+ */
 function m2mAuth(req, res, next) {
+  _deprecated('KSA_DEP_M2M', `m2mAuth is deprecated. ${_SHARED_KEY_REMOVAL}`);
   const key = req.headers['x-api-key'];
   if (!key || key !== process.env.INTERNAL_API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
@@ -139,7 +163,13 @@ async function _getEntitlements(orgId) {
   return services;
 }
 
+/**
+ * @deprecated Entitlement-only gate that calls the legacy `/entitlements/{org}`
+ * endpoint with the shared key. `requirePermission('service:action')` from
+ * `@konstant-studio/auth/v2` checks entitlement AND permission. Behaviour is unchanged.
+ */
 function requireService(serviceSlug) {
+  _deprecated('KSA_DEP_REQUIRE_SERVICE', `requireService is deprecated. ${_SHARED_KEY_REMOVAL}`);
   return async (req, res, next) => {
     if (!req.auth?.userId) {
       return res.status(401).json({ error: 'Unauthorized' });
@@ -185,3 +215,10 @@ module.exports = {
   requireService,
   _resetEntitlementCache,
 };
+
+// v2 (control-plane auth), also reachable as require('@konstant-studio/auth/v2').
+// Lazy getters, so an adopter that never calls createAuth() never loads v2's
+// dependencies: v1-only apps run exactly as before.
+for (const name of ['createAuth', 'Principal', 'ConfigError', 'parsePermission', 'routeAllowed', 'verifySignature']) {
+  Object.defineProperty(module.exports, name, { enumerable: true, get: () => require('./v2')[name] });
+}

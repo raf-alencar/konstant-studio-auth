@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Set
 
@@ -23,6 +24,29 @@ from jose import jwt
 from jose.exceptions import JWTError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Deprecations. Nothing here changes behaviour: each notice is emitted once per
+# process (as a log warning AND a DeprecationWarning; the latter is hidden by
+# Python's default filters outside __main__, which is why the log line exists)
+# and points at the v2 replacement. KSA_SILENCE_DEPRECATIONS=1 silences it.
+# ---------------------------------------------------------------------------
+
+_warned: set[str] = set()
+
+_SHARED_KEY_REMOVAL = (
+    "The shared-key path (INTERNAL_API_KEY / X-API-Key) stays supported until the platform "
+    "cutover (ACCEPT_SHARED_KEY=false, decided by the CoS); migrate to per-service keys and "
+    "konstant_studio_auth.v2. See docs/MIGRATION.md."
+)
+
+
+def _deprecated(name: str, message: str) -> None:
+    if name in _warned or os.getenv("KSA_SILENCE_DEPRECATIONS") == "1":
+        return
+    _warned.add(name)
+    logger.warning("%s", message)
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
 
 
 @dataclass
@@ -142,7 +166,11 @@ async def m2m_auth(
 
     Returns an AuthState with `user_id="system"` and `is_superadmin=True`,
     matching the Node package's behaviour.
+
+    Deprecated: shared-key auth. Use a per-service key with `konstant_studio_auth.v2`.
+    Behaviour is unchanged; removal is tied to the platform's ACCEPT_SHARED_KEY=false cutover.
     """
+    _deprecated("m2m_auth", f"m2m_auth is deprecated. {_SHARED_KEY_REMOVAL}")
     expected = os.getenv("INTERNAL_API_KEY")
     if not x_api_key or not expected or x_api_key != expected:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -172,6 +200,7 @@ async def protect_or_m2m(
 
     expected = os.getenv("INTERNAL_API_KEY")
     if x_api_key and expected and x_api_key == expected:
+        _deprecated("protect_or_m2m", f"The X-API-Key branch of protect_or_m2m is deprecated. {_SHARED_KEY_REMOVAL}")
         return AuthState(
             user_id="system",
             org_id=None,
@@ -263,7 +292,13 @@ def require_service(service_slug: str):
 
     Accepts both a Clerk session and `X-API-Key` (m2m). m2m always bypasses
     because `m2m_auth` returns `is_superadmin=True`.
+
+    Deprecated: entitlement-only gate through the legacy `/entitlements/{org}` endpoint
+    with the shared key. `require_permission` in `konstant_studio_auth.v2` checks
+    entitlement AND permission. Behaviour is unchanged.
     """
+    _deprecated("require_service", f"require_service is deprecated. {_SHARED_KEY_REMOVAL}")
+
     async def _check(auth: AuthState = Depends(protect_or_m2m)) -> AuthState:
         if auth.is_superadmin:
             return auth
