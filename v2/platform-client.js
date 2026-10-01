@@ -5,6 +5,18 @@
 
 class PlatformUnavailable extends Error {}
 
+// The platform said "slow down" (HTTP 429). Not a verdict about anyone's credential: callers
+// back off for retryAfterMs and answer platform_unavailable meanwhile.
+class PlatformThrottled extends PlatformUnavailable {
+  constructor(retryAfterMs) {
+    super('platform throttled this service');
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+const MAX_RETRY_AFTER_MS = 30_000;
+const DEFAULT_RETRY_AFTER_MS = 5_000;
+
 class PlatformClient {
   constructor({ baseUrl, key, fetch, timeoutMs, logger }) {
     this.baseUrl = baseUrl;
@@ -38,6 +50,10 @@ class PlatformClient {
       this.logger.error(`platform refused this service's key (HTTP ${resp.status}) for ${method} ${path.split('?')[0]}`);
       throw new PlatformUnavailable(`platform refused the service key (${resp.status})`);
     }
+    if (resp.status === 429) {
+      const secs = Number(resp.headers.get('retry-after'));
+      throw new PlatformThrottled(Number.isFinite(secs) && secs > 0 ? Math.min(secs * 1000, MAX_RETRY_AFTER_MS) : DEFAULT_RETRY_AFTER_MS);
+    }
     if (resp.status >= 500) throw new PlatformUnavailable(`platform error ${resp.status}`);
     return resp;
   }
@@ -70,4 +86,4 @@ class PlatformClient {
   }
 }
 
-module.exports = { PlatformClient, PlatformUnavailable };
+module.exports = { PlatformClient, PlatformUnavailable, PlatformThrottled };

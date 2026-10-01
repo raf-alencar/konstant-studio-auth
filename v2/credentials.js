@@ -15,14 +15,24 @@ function header(headers, name) {
   return Array.isArray(v) ? v[0] : v;
 }
 
+// -> the cookie's value, undefined if absent, or null if it is present MORE THAN ONCE (ambiguous).
+// A malformed percent-escape never throws: the raw value is used, and Clerk validation then
+// answers token_invalid (a session JWT contains no % at all).
 function cookie(headers, name) {
   const raw = header(headers, 'cookie');
   if (!raw) return undefined;
+  const found = [];
   for (const part of raw.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+    if (i > 0 && part.slice(0, i).trim() === name) found.push(part.slice(i + 1).trim());
   }
-  return undefined;
+  if (found.length === 0) return undefined;
+  if (found.length > 1) return null;
+  try {
+    return decodeURIComponent(found[0]);
+  } catch {
+    return found[0];
+  }
 }
 
 function keyKindOf(raw) {
@@ -44,16 +54,25 @@ function isAudienceToken(raw) {
   }
 }
 
-// -> { type: 'key'|'clerk'|'audience'|'none', raw, keyKind? }
+// -> { type: 'key'|'clerk'|'audience'|'none'|'invalid', raw, keyKind? }
+//
+// 'invalid' means the request carried an AMBIGUOUS credential: the same header (or cookie) more
+// than once. Fetch Headers and Express join repeated header values with ", " and no key or JWT
+// contains a comma, so a comma means "more than one value". Which of two credentials the sender
+// meant is not a question to guess at: it is refused (token_invalid), whatever each would have
+// resolved to. (Node's HTTP parser keeps only the first of a repeated Authorization header, so
+// that one case is not detectable here; every other repeated header and cookie is.)
 function extract(headers) {
   const apiKey = header(headers, 'x-api-key');
   const auth = header(headers, 'authorization');
-  const bearer = auth && /^bearer\s+/i.test(auth) ? auth.replace(/^bearer\s+/i, '').trim() : undefined;
+  if ((apiKey && apiKey.includes(',')) || (auth && auth.includes(','))) return { type: 'invalid' };
+  const session = cookie(headers, '__session');
+  if (session === null) return { type: 'invalid' };
 
+  const bearer = auth && /^bearer\s+/i.test(auth) ? auth.replace(/^bearer\s+/i, '').trim() : undefined;
   if (apiKey && keyKindOf(apiKey)) return classify(apiKey);
   if (bearer) return classify(bearer);
   if (apiKey) return { type: 'key', raw: apiKey, keyKind: null }; // not a platform key: key_not_found, not a guess
-  const session = cookie(headers, '__session');
   if (session) return classify(session);
   return { type: 'none' };
 }

@@ -7,7 +7,7 @@ Use this together with [ADOPTION-CHECKLIST.md](./ADOPTION-CHECKLIST.md) (the ste
 ## What does not change
 
 - `setupClerk`, `protect`, `superadminOnly`, `getBrandId`, `requireLogin`, `@konstant-studio/auth/webhooks`, and the Python `clerk_protect`, `superadmin_only`, `get_brand_id`, `webhooks_router`: unchanged. Browser login still goes through Clerk; `requireLogin` still redirects HTML pages to the hosted sign-in.
-- `req.auth` keeps its shape. v2 middleware sets a v1-shaped `req.auth` too (`isSuperadmin` is always `false` there: in v2 only the permission matrix grants anything).
+- `req.auth` under v2 middleware is **not** identical to v1's, on purpose. v2 sets `{ userId, tenantId, clerkOrgId, clerkOrgRole, isSuperadmin: false }`: `isSuperadmin` is always `false` (only the permission matrix grants anything) and **`orgId` / `orgRole` are gone**. In v1 the Clerk org was the scoping key; in v2 a request can be about a different tenant than the token's org (a route's tenant, an agency view), and a handler that authorises on the decision but scopes its data by the token's org would mix tenants. **Scope data by `tenantId` (= `decision.tenantId`) only.** `clerkOrgId` is for display and logs. Code that still reads `req.auth.orgId` behind v2 middleware must move to `tenantId`; v1 middleware (`protect`) is unchanged.
 
 ## What is deprecated (and when it goes)
 
@@ -20,13 +20,13 @@ Use this together with [ADOPTION-CHECKLIST.md](./ADOPTION-CHECKLIST.md) (the ste
 
 1. Mint the calling service a `stgs_` key bound to *its* catalog service (never `* /*`), and give your own app a key bound to *yours*.
 2. Declare who you accept: `acceptedCallerServices: ['image', 'video']` (or `AUTH_ACCEPTED_CALLER_SERVICES`). Not "any".
-3. Write your own route policy per accepted caller (deny by default) and gate the routes with `requireServiceCaller(policy)` / `withServiceCaller` / `require_service_caller`. The `allowed_routes` the platform shows for the key are *platform* routes and are not your policy.
+3. Write your own route policy per accepted caller (deny by default; `*` is one path segment, `**` many; matched on the path as sent, and any path with `%`, `..` or `//` is refused) and gate the routes with `requireServiceCaller(policy)` / `withServiceCaller` / `require_service_caller`. The `allowed_routes` the platform shows for the key are *platform* routes and are not your policy.
 4. Expect `401 key_not_found` for every kind of bad key (the platform's finer reason is audit detail only), and that a revoked key can keep working here for up to 60 s (the resolution cache).
 
 ## The two things every migration needs a decision on
 
 1. **Route -> permission map.** Each route group gets a `service:action` from the platform's catalog (`docs:read`, `social:approve`, ...). The platform owns the vocabulary; an unknown permission is denied with `unknown_permission`. Approve/publish/send/delete/manage actions are `sensitive`: the library asks the platform live for them, and they need step-up in the UI.
-2. **Where the tenant comes from.** v2 decides *within a tenant*. In order: the route (`tenant: (req) => req.params.tenant`), the `x-tenant` header, your `tenantResolver(req, principal)`, and then the **Clerk organization in the session token**, which the library maps to a tenant itself through the snapshot's `org_id` (platform C0b2). An app that scopes by `orgId` today therefore needs no resolver once C0b2 is deployed: the org in the session names the tenant, and an org the user does not belong to is denied rather than swapped for one they do. Before C0b2 is deployed the snapshot has no `org_id`, the mapping finds nothing, and the platform answers (`tenant_required` for a user with several memberships); a `tenantResolver` bridges that gap if you need it sooner.
+2. **Where the tenant comes from.** v2 decides *within a tenant*. In order: the route (`tenant: (req) => req.params.tenant`), your `tenantResolver(req, principal)`, the **Clerk organization in the session token** (which the library maps to a tenant itself through the snapshot's `org_id`, platform C0b2), and last the `x-tenant` header as a weak hint (it cannot move a token off its org's tenant). An app that scopes by `orgId` today therefore needs no resolver once C0b2 is deployed: the org in the session names the tenant, and an org the user does not belong to is denied rather than swapped for one they do. Before C0b2 is deployed the snapshot has no `org_id`, the mapping finds nothing, and the platform answers (`tenant_required` for a user with several memberships); a `tenantResolver` bridges that gap if you need it sooner.
 
 ## Per adopting repo
 

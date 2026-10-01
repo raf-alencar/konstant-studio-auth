@@ -28,18 +28,27 @@ test('scope: every dimension, fail-closed on the unexpected', () => {
   assert.equal(scopeAllows({ brand_ids: ['b1'] }, { brand: '' }), 'scope_required');
 });
 
-test('service-key route allow-list matches the platform semantics', () => {
-  const routes = ['GET /v1/authorize/snapshot', 'POST /v1/authorize', '* /v1/events*', 'DELETE /v1/service-keys/*'];
-  assert.equal(routeAllowed(routes, 'get', '/v1/authorize/snapshot'), true);
-  assert.equal(routeAllowed(routes, 'POST', '/v1/authorize'), true);
-  assert.equal(routeAllowed(routes, 'POST', '/v1/authorize/snapshot'), false, 'method matters');
-  assert.equal(routeAllowed(routes, 'PATCH', '/v1/events/12'), true, '* method, * glob');
-  assert.equal(routeAllowed(routes, 'DELETE', '/v1/service-keys/abc'), true);
-  assert.equal(routeAllowed(routes, 'DELETE', '/v1/service-keys'), false);
-  assert.equal(routeAllowed(routes, 'GET', '/v1/authorizeX'), false, 'no prefix matching without a glob');
+test('app route policy: * is one path segment, ** is many, matched on the path as sent', () => {
+  const routes = ['GET /internal/status/*', 'POST /internal/render', '* /internal/events/**', 'DELETE /internal/jobs/*/cancel'];
+  assert.equal(routeAllowed(routes, 'get', '/internal/status/42'), true, 'method is case-insensitive');
+  assert.equal(routeAllowed(routes, 'GET', '/internal/status/42/extra'), false, '* never crosses a "/"');
+  assert.equal(routeAllowed(routes, 'POST', '/internal/render'), true);
+  assert.equal(routeAllowed(routes, 'POST', '/internal/render/'), false, 'no prefix or trailing-slash guessing');
+  assert.equal(routeAllowed(routes, 'PATCH', '/internal/events/a/b/c'), true, '* method, ** crosses segments');
+  assert.equal(routeAllowed(routes, 'DELETE', '/internal/jobs/9/cancel'), true, '* inside the path');
+  assert.equal(routeAllowed(routes, 'DELETE', '/internal/jobs/9/x/cancel'), false);
+  assert.equal(routeAllowed(routes, 'GET', '/internal/status/42?x=1'), true, 'the query string is not part of the path');
   assert.equal(routeAllowed(['GET /a.b'], 'GET', '/aXb'), false, 'glob characters other than * are literal');
   assert.equal(routeAllowed([], 'GET', '/'), false, 'deny by default');
   assert.equal(routeAllowed(undefined, 'GET', '/'), false);
+});
+
+test('app route policy refuses any path that can be read two ways', () => {
+  const routes = ['GET /internal/**', 'GET /internal/status/*'];
+  for (const bad of ['/internal/../admin', '/internal/status/..%2fadmin', '/internal/status/%2e%2e/x', '/internal//status/1',
+    '/internal/status/a%2fb', '/internal/status/\u0000', '/internal/status/\n1', 'internal/status/1', '', '/internal/status/a..b']) {
+    assert.equal(routeAllowed(routes, 'GET', bad), false, JSON.stringify(bad));
+  }
 });
 
 test('config: Clerk without authorized parties refuses to start; no hard-coded secret defaults', () => {
@@ -192,7 +201,7 @@ test('unparseable timestamps in a snapshot deny instead of being skipped', () =>
     roles: [{ id: 'r1', slug: 'viewer', tenant_id: null, permissions: ['docs:read'] }],
     memberships: [{ principal_id: 'p', user_id: 'u1', kind: 'human', tenant_id: 't1', role_id: 'r1', scope: {}, expires_at: null, ...over.membership }],
   });
-  const ask = (s) => decideOffline(s, { userId: 'u1' }, 'docs', 'read', { tenant: 't1' }, Date.now());
+  const ask = (s) => decideOffline(s, { userId: 'u1', kind: 'human' }, 'docs', 'read', { tenant: 't1' }, Date.now());
   assert.equal(ask(snap()).allow, true);
   assert.equal(ask(snap({ tenant: { ends_at: 'garbage' } })).allow, false);
   assert.equal(ask(snap({ tenant: { starts_at: 'garbage' } })).allow, false);

@@ -4,6 +4,15 @@ Semantic versioning. v1 exports are never removed in a minor release; they are d
 
 ## 0.2.0 — control-plane authorization (v2)
 
+### Security review fixes (CoS review of 011275b)
+- **R1** `x-tenant` is only a hint (last in the tenant order) so a header cannot move a token off its org's tenant; v2's `req.auth` drops `orgId`/`orgRole` (they invited scoping data by the token's org) and gains `tenantId` (the only scoping key), `clerkOrgId`, `clerkOrgRole`. Audit events carry `tenant_source`.
+- **R2** Service-key resolutions: key-shape check before any platform call; LRU valid cache plus a separate small invalid cache (garbage cannot flush good entries); a cap on in-flight resolutions; a platform 429 pauses resolution instead of becoming a verdict; nonsensical numeric options are startup errors in both languages.
+- **R3** Route policy matches the path as sent; `*` is one segment, `**` many; any `%`, `..`, `//` or control character is refused; policies are validated at wiring.
+- **R4** Platform booleans must be exactly `true`/`false`; an allow must name a principal and the tenant asked about.
+- **R5** The tenant resolver and org lookup run only for locally verified Clerk sessions.
+- Hardening: JWKS single-flight with a failure backoff; a change event is never lost to an older in-flight refresh; TTLs use a monotonic clock (the wall clock still governs token and window validity); a repeated credential header/cookie is refused; a malformed cookie escape never throws; `decideOffline` has no default principal kind; the Next adapter never throws; pinned dependencies.
+- Shared vectors now also pin credential extraction and route-policy paths for both languages; the service-key vectors are un-pended and parity is re-pinned to platform commit 8335387.
+
 ### Added
 - `@konstant-studio/auth/v2` (`createAuth`, also exported lazily from the package root): resolves a Clerk session token, agent key, guest key, MCP key or service key to one `Principal`; `requirePermission('service:action', { tenant, brand, domain, mailbox })`, `requireApprover({ stepUp })`, `assertTenant`, `usageContext`. Deny by default; decisions come from the stighive-platform control plane (`/v1/authorize`, the cached snapshot with ETag, the change feed).
 - Offline Clerk verification with a **mandatory `azp` check** (refuses to start without `CLERK_AUTHORIZED_PARTIES`).

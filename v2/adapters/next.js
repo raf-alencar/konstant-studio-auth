@@ -22,9 +22,20 @@ function nextAdapter(core) {
     return new Response(JSON.stringify(denialBody(d, cfg)), { status: d.status, headers });
   }
 
+  // Never throws: a scope callback that throws (or anything else unexpected) is a 503, not an allow
+  // and not an unhandled error.
   async function authorizeRequest(request, permission, scope, ctx, opts = {}) {
+    try {
+      return await authorizeRequestUnsafe(request, permission, scope, ctx, opts);
+    } catch (err) {
+      cfg.logger.error(`auth route wrapper: unexpected ${err?.name || 'error'}`);
+      return { allow: false, reason: 'platform_unavailable', status: 503, principal: null, tenantId: null, viaTenant: null, roles: [], sensitive: false, source: 'none', stale: false };
+    }
+  }
+
+  async function authorizeRequestUnsafe(request, permission, scope, ctx, opts) {
     const resource = await resolveScope(scope, request, ctx);
-    if (!resource.tenant && request.headers.get('x-tenant')) resource.tenant = request.headers.get('x-tenant');
+    if (request.headers.get('x-tenant')) resource.tenantHint = request.headers.get('x-tenant');
     const args = {
       headers: request.headers, permission, resource, req: request,
       requestId: cleanRunId(request.headers.get('x-run-id')),
@@ -50,8 +61,9 @@ function nextAdapter(core) {
   function withServiceCaller(policy, handler) {
     validatePolicy(policy, cfg.acceptedCallerServices);
     return async (request, ctx) => {
-      const url = new URL(request.url);
-      const d = await core.authorizeServiceCaller({ headers: request.headers, method: request.method, path: url.pathname, policy });
+      // The path as SENT: URL parsing would normalise `..` away and hide exactly what the policy must see.
+      const rawPath = (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*([^?#]*)/i.exec(request.url) || [])[1] ?? '';
+      const d = await core.authorizeServiceCaller({ headers: request.headers, method: request.method, path: rawPath, policy });
       if (!d.allow) return deny(d);
       return handler(request, ctx, { principal: d.principal, decision: d, auth: legacyAuth(d.principal, d) });
     };

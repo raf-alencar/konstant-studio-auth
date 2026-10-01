@@ -2,10 +2,10 @@
 // (mandatory expect_service, uniform key_not_found, bounded resolution cache, no tenant
 // permissions, the app's OWN route policy for each accepted caller service).
 //
-// The shared vectors for these cases stay `pending-platform` in the shared runners until the
-// platform's C0b2 fixes land. Here the very same cases run against a fake that implements the
-// contract note, so the expectations are executable today; test/e2e/service-keys.test.js
-// proves against the real C0b2 platform what it already does.
+// The shared vectors for these cases ran `pending-platform` until the platform's C0b2 fixes
+// (8335387) were accepted; they are now ordinary vectors in the shared runner and, in e2e, run
+// against the real platform. This file adds the detail the vectors do not express (cache,
+// expect_service sequence, policy helper) against a fake that implements the contract note.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -33,8 +33,8 @@ async function build(over = {}) {
 const headers = (ref) => ({ 'x-api-key': raw(ref) });
 const uniform = (d) => [d.allow, d.reason, d.status];
 
-test('the pending service-key vectors, run against the contract-note fake', async (t) => {
-  for (const c of VECTORS.cases.filter((x) => x.pending && x.who.key && keyOf(x.who.key).kind === 'service')) {
+test('the service-key vectors, once more through the contract-note fake', async (t) => {
+  for (const c of VECTORS.cases.filter((x) => x.who.key && keyOf(x.who.key).kind === 'service')) {
     await t.test(c.id, async () => {
       const { auth, fake } = await build();
       const exp = c.expect;

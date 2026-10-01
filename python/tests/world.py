@@ -209,6 +209,10 @@ class FakePlatform:
         self.calls = []
         self.snapshot_version = 100
         self.events = []
+        # Test controls: a platform that throttles, holds a resolution open, or answers malformed.
+        self.throttle_resolve = 0  # seconds: answer resolve with 429 + Retry-After
+        self.gate = None  # an asyncio.Event/Future: resolve waits for it
+        self.override = None  # fn(path, body) -> dict | httpx.Response | None
         self.service_resolves = []  # expect_service of every stgs_ resolve, in order
         self.service_key_expires_at = None
         self.transport = httpx.MockTransport(self.handle)
@@ -249,6 +253,15 @@ class FakePlatform:
             raise httpx.ConnectError("fetch failed")
         body = json.loads(request.content) if request.content else {}
         w = self.world
+        if u.path == "/v1/principals/resolve":
+            if self.throttle_resolve:
+                return httpx.Response(429, headers={"retry-after": str(self.throttle_resolve)})
+            if self.gate is not None:
+                await self.gate.wait() if hasattr(self.gate, "wait") else await self.gate
+        if self.override:
+            r = self.override(u.path, body)
+            if r is not None:
+                return r if isinstance(r, httpx.Response) else _json(r)
 
         if method == "GET" and u.path == "/v1/authorize/snapshot":
             snap = w.snapshot(parse_qs(u.query)["service"][0], version=self.snapshot_version)

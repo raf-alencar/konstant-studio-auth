@@ -11,6 +11,7 @@ const { decodeProtectedHeader, importJWK, jwtVerify, errors } = require('jose');
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FORCE_MIN_INTERVAL_MS = 60 * 1000;
+const RETRY_AFTER_FAILURE_MS = 10 * 1000; // a JWKS outage must not become a fetch per request
 const CLOCK_TOLERANCE_S = 5;
 
 class Denied extends Error {
@@ -21,12 +22,15 @@ class Denied extends Error {
 }
 
 class ClerkVerifier {
-  constructor({ issuer, jwksUrl, authorizedParties, audience }, { fetch, now, logger }) {
+  constructor({ issuer, jwksUrl, authorizedParties, audience }, { fetch, now, monotonic, logger }) {
     this.cfg = { issuer, jwksUrl, authorizedParties, audience };
     this.fetch = fetch;
-    this.now = now;
+    this.now = now; // wall clock: token validity
+    this.monotonic = monotonic ?? now; // cache ages
     this.logger = logger;
     this.keys = null;
+    this.inflight = null;
+    this.nextAttemptAt = -Infinity;
     this.fetchedAt = 0;
     this.forcedAt = -Infinity;
   }
@@ -36,19 +40,35 @@ class ClerkVerifier {
   }
 
   async _jwks(force = false) {
-    const t = this.now();
+    const t = this.monotonic();
     if (this.keys && !force && t - this.fetchedAt < CACHE_TTL_MS) return this.keys;
-    if (force) {
-      if (this.keys && t - this.forcedAt < FORCE_MIN_INTERVAL_MS) return this.keys;
-      this.forcedAt = t;
+    if (force && this.keys && t - this.forcedAt < FORCE_MIN_INTERVAL_MS) return this.keys;
+    // After a failure, keep serving the last good keys (or fail fast with none) instead of
+    // retrying on every request.
+    if (t < this.nextAttemptAt) {
+      if (this.keys) return this.keys;
+      throw new Denied('clerk_jwks_unavailable');
     }
+    if (force) this.forcedAt = t;
+    // One fetch at a time: concurrent requests share it.
+    if (!this.inflight) {
+      this.inflight = this._fetchKeys().finally(() => {
+        this.inflight = null;
+      });
+    }
+    return this.inflight;
+  }
+
+  async _fetchKeys() {
     try {
       const resp = await this.fetch(this.cfg.jwksUrl, { redirect: 'error', signal: AbortSignal.timeout(5000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       this.keys = (await resp.json()).keys || [];
-      this.fetchedAt = t;
+      this.fetchedAt = this.monotonic();
+      this.nextAttemptAt = -Infinity;
     } catch (err) {
       this.logger.warn(`clerk JWKS refresh failed: ${err.message}`);
+      this.nextAttemptAt = this.monotonic() + RETRY_AFTER_FAILURE_MS;
       if (!this.keys) throw new Denied('clerk_jwks_unavailable');
     }
     return this.keys;

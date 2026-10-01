@@ -271,8 +271,9 @@ FastAPI and the Python API: see [python/README.md](./python/README.md).
 
    Offline decisions are proven equal to the platform's by the [parity test](#tests). A key is never cached, so revocation is immediate.
 4. **Fail closed.** Platform unreachable: sensitive actions and key checks → `503`; read checks are served from the cache for at most `SNAPSHOT_STALE_READ_TTL_SECONDS` (default 300), then `503`; other routine checks → `503`. A `503` means "could not decide" and carries `Retry-After`; it is never an allow.
-5. **Tenant.** Chosen in this order: the `tenant` scope; the `x-tenant` header (it only selects: the decision still has to find the user's membership in it); your `tenantResolver(req, principal)`; then the **Clerk organization in the session token** (`org_id`, or `o.id` in Clerk's v2 token) mapped through the snapshot's `tenant.org_id`, offline. An org the user does not belong to is denied, never silently swapped for a tenant they do belong to. With none chosen and several memberships the platform answers `tenant_required`. A tenant that is not a UUID can never name a tenant: it is denied (`tenant_not_found`) without calling the platform.
-6. **Events.** `onEvent(e)` receives one `auth.decision` event per check (ids and the decision only — never a token, header or key). `usageContext(req)` gives the actor for usage events (event contract: "Usage ledger design").
+5. **Tenant, and the one scoping key.** Chosen in this order: the route's `tenant` scope; your `tenantResolver(req, principal)`; the **Clerk organization in the session token** (`org_id`, or `o.id` in Clerk's v2 token) mapped through the snapshot's `tenant.org_id`, offline; and last the `x-tenant` header, only a *hint* used when nothing above named a tenant (so a header cannot move a token off its org's tenant). The resolver and the org lookup run only for a Clerk session the library itself verified, never for a credential the platform has not yet confirmed. An org the user does not belong to is denied, never silently swapped for a tenant they do belong to. With none chosen and several memberships the platform answers `tenant_required`. A tenant that is not a UUID can never name a tenant: it is denied (`tenant_not_found`) without calling the platform. **The only key to scope data by is `decision.tenantId` (`req.auth.tenantId`).** The token's Clerk org is not a scoping key in v2: it is exposed as `req.auth.clerkOrgId` for display and logs only, and v2's `req.auth` has no `orgId`. Audit events say where the tenant came from (`tenant_source`: `explicit`, `resolver`, `org`, `hint`).
+6. **Hostile input.** A key that cannot be a platform key is refused without a platform call; a repeated credential header or cookie (or a comma in one) is refused as ambiguous (`token_invalid`); a malformed cookie escape never throws; a platform reply whose booleans are not exactly `true`/`false`, or whose allow names no principal or another tenant, is treated as a malformed platform (503), never a yes. Service-key resolutions are capped in flight, kept in an LRU cache with a separate small cache for invalid answers (garbage cannot flush good entries), and a platform 429 pauses resolution instead of becoming a verdict.
+7. **Events.** `onEvent(e)` receives one `auth.decision` event per check (ids and the decision only — never a token, header or key). `usageContext(req)` gives the actor for usage events (event contract: "Usage ledger design").
 
 Responses: `401 {error, reason}` for a credential problem, `403 {error, reason}` for a decision (`not_entitled` adds `upgrade_url`), `503` when it could not decide.
 
@@ -292,6 +293,7 @@ app.use('/internal', auth.express.requireServiceCaller({
 }));
 // Next.js: auth.next.withServiceCaller(policy, handler)   FastAPI: Depends(auth.require_service_caller(policy))
 ```
+- **Route policy matching.** Matched on the path **as sent** (undecoded, without the query string, including any mount prefix). `*` matches within one path segment, `**` across segments. A path that could be read two ways is refused outright: any `%`, `..`, `//`, a control character, or one that does not start with `/`. `* /*` and `* /**` are refused when you write the policy. Next.js route handlers see the pathname as sent too.
 - **No tenant permissions.** `requirePermission` for a service principal is denied (`service_principal_not_granted`, the platform's own answer). A tenant is not part of a service principal; platform-side grants between services are a later design.
 - **Cache.** A valid resolution is kept for at most 60 s, an invalid one for at most 10 s, keyed by a hash of the credential (never the credential), bounded in size. The platform audits every uncached resolution; the cache keeps that volume sane. The trade-off: a revoked service key can keep working here for up to a minute (agent, guest and MCP keys are never cached).
 
@@ -312,7 +314,7 @@ app.use('/internal', auth.express.requireServiceCaller({
 | `AUTH_STEP_UP_MAX_AGE_MINUTES` | Max age of the second factor for `stepUp` (default 10). |
 | `AUTH_ACCEPTED_CALLER_SERVICES` | Comma-separated catalog services whose inbound `stgs_` keys this app accepts (or `acceptedCallerServices`). Empty = refuse every service key. |
 
-Step-up reads Clerk's `fva` session claim (`[minutes since first factor, minutes since second]`, `-1` = none). **Not yet confirmed against this Clerk instance's token shape**: if `fva` is absent, step-up is denied, never assumed.
+Step-up reads Clerk's `fva` session claim (`[minutes since first factor, minutes since second]`, `-1` = none). **Not yet confirmed against this Clerk instance's token shape, and Raf must enable multi-factor sign-in first**: until the `fva` claim is confirmed present in this deployment's session token, every `stepUp` check is denied (`step_up_required`, with a message saying MFA must be enabled and the claim present). Do not rely on `requireApprover({ stepUp })` until that is confirmed.
 
 ### Optional: change-event webhook
 
@@ -325,7 +327,7 @@ app.post('/_platform/events', express.raw({ type: 'application/json' }), auth.ev
 ### Tests
 
 ```bash
-npm test            # shared vectors + unit + v1 compatibility (no network)
+npm test            # shared vectors (cases, credential extraction, route policy) + unit + hardening + v1 compatibility (no network)
 npm run test:smoke  # pack the tarball, install it into a scratch project, load it like the adopters do
 # parity + sample apps against a scratch copy of the platform branch:
 python scripts/scratch_platform.py start --platform-dir <copy of the C0b branch> --database-url postgresql://postgres@127.0.0.1:55433/cptest_x
@@ -333,7 +335,7 @@ npm run test:e2e
 python scripts/scratch_platform.py stop
 ```
 
-`test-vectors/vectors.json` is the shared fixture (one file for Node and Python; adopting repos reuse it as acceptance tests). The scratch harness refuses any database that is not local and named `cptest*`, binds 127.0.0.1 only, and uses fake secrets generated per run.
+`test-vectors/vectors.json` is the shared fixture (one file for Node and Python; adopting repos reuse it as acceptance tests): decisions, credential extraction and route-policy paths. Python's suite needs `pytest-asyncio` (`python/requirements-dev.txt`). The scratch harness takes `--port` and `--jwks-port` (default `port+1`); pick free ports if 3329/3330 or Postgres 55433 are in use on your machine. The scratch harness refuses any database that is not local and named `cptest*`, binds 127.0.0.1 only, and uses fake secrets generated per run.
 
 ## Environment variables (v1)
 

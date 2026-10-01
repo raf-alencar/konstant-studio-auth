@@ -1,9 +1,6 @@
-// Against the real C0b2 platform (scratch copy, commit 79f4fce): what it ALREADY does for inbound
-// service keys and effective permissions, and what the library makes of it. The shared vectors for
-// service keys stay `pending-platform` until the CoS's C0b2 fixes (mandatory expect_service,
-// uniform key_not_found) land; nothing here depends on those: the library always sends
-// expect_service and answers uniformly whatever specific reason the platform gives, so these
-// pass both before and after.
+// Against the real platform (scratch copy of the accepted C0b2 with its fixes): inbound service
+// keys and effective permissions, and what the library makes of them. The shared service-key
+// vectors run in parity.test.js; this adds the detail they do not express.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -79,7 +76,8 @@ test('service keys and effective permissions against the scratch platform', asyn
     const auth = build();
     let compared = 0;
     for (const c of VECTORS.cases) {
-      if (c.pending || c.platform === 'down' || c.parity === false || c.who.token) continue;
+      if (c.pending || c.platform === 'down' || c.parity === false || c.who.token || c.resolve_only || !c.ask.permission) continue;
+      if (c.who.key && ctx.state.keys[c.who.key].startsWith('stgs_')) continue; // service principals hold none: covered above
       if (!(c.who.clerk || c.who.key)) continue;
       const headers = c.who.clerk ? { authorization: `Bearer ${await tokenFor(ctx, c.who.clerk)}` } : { 'x-api-key': ctx.state.keys[c.who.key] };
       const [service, action] = c.ask.permission.split(':');

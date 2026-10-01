@@ -12,6 +12,19 @@ class PlatformUnavailable(Exception):
     pass
 
 
+class PlatformThrottled(PlatformUnavailable):
+    """The platform said "slow down" (HTTP 429). Not a verdict about anyone's credential: callers
+    back off for retry_after_ms and answer platform_unavailable meanwhile."""
+
+    def __init__(self, retry_after_ms):
+        super().__init__("platform throttled this service")
+        self.retry_after_ms = retry_after_ms
+
+
+MAX_RETRY_AFTER_MS = 30_000
+DEFAULT_RETRY_AFTER_MS = 5_000
+
+
 class PlatformClient:
     def __init__(self, base_url, key, http, timeout_ms, logger):
         self.base_url = base_url
@@ -49,6 +62,12 @@ class PlatformClient:
                 f"platform refused this service's key (HTTP {resp.status_code}) for {method} {path.split('?')[0]}"
             )
             raise PlatformUnavailable(f"platform refused the service key ({resp.status_code})")
+        if resp.status_code == 429:
+            try:
+                secs = float(resp.headers.get("retry-after"))
+            except (TypeError, ValueError):
+                secs = 0
+            raise PlatformThrottled(min(secs * 1000, MAX_RETRY_AFTER_MS) if secs > 0 and secs == secs else DEFAULT_RETRY_AFTER_MS)
         if resp.status_code >= 500:
             raise PlatformUnavailable(f"platform error {resp.status_code}")
         return resp

@@ -86,8 +86,12 @@ async def test_effective_permits_agrees_with_authorize_on_every_runnable_vector(
     compared = 0
     try:
         for c in VECTORS["cases"]:
-            if c.get("pending") or c.get("platform") == "down" or c.get("parity") is False or c["who"].get("token"):
+            if c.get("pending") or c.get("platform") == "down" or c.get("parity") is False or c["who"].get("token") or c.get("resolve_only"):
                 continue
+            if not c["ask"].get("permission"):
+                continue
+            if c["who"].get("key") and ctx.state["keys"][c["who"]["key"]].startswith("stgs_"):
+                continue  # service principals hold none: covered above
             if not (c["who"].get("clerk") or c["who"].get("key")):
                 continue
             headers = bearer(ctx, c["who"]["clerk"]) if c["who"].get("clerk") else {"x-api-key": ctx.state["keys"][c["who"]["key"]]}

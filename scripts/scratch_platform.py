@@ -160,8 +160,8 @@ def start(args) -> None:
     from cryptography.fernet import Fernet
 
     guard_database(args.database_url)
-    if args.port in FORBIDDEN_PORTS:
-        sys.exit(f"refusing to use port {args.port}")
+    if args.port in FORBIDDEN_PORTS or (args.jwks_port or 0) in FORBIDDEN_PORTS:
+        sys.exit("refusing to use the real platform or graph port")
     state_path = Path(args.state)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     if state_path.exists():
@@ -182,7 +182,7 @@ def start(args) -> None:
     jwks_dir = state_path.parent / f"jwks-{state_path.stem}"
     jwks_dir.mkdir(exist_ok=True)
     (jwks_dir / "jwks.json").write_text(json.dumps({"keys": [rsa_public_jwk(clerk_pem, kid)]}))
-    jwks_port = args.port + 1
+    jwks_port = args.jwks_port or args.port + 1
     jwks = subprocess.Popen([sys.executable, "-m", "http.server", str(jwks_port), "--bind", "127.0.0.1", "--directory", str(jwks_dir)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -256,6 +256,8 @@ def main() -> None:
     ap.add_argument("--platform-dir", default=os.environ.get("SCRATCH_PLATFORM_DIR"))
     ap.add_argument("--database-url", default=os.environ.get("SCRATCH_DATABASE_URL"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("SCRATCH_PLATFORM_PORT", "3329")))
+    ap.add_argument("--jwks-port", type=int, default=int(os.environ["SCRATCH_JWKS_PORT"]) if os.environ.get("SCRATCH_JWKS_PORT") else None,
+                    help="port for the fake Clerk JWKS server (default: --port + 1); set it when that port is taken")
     ap.add_argument("--state", default=str(REPO / ".scratch" / "state.json"))
     ap.add_argument("--platform-commit", default=VECTORS["contract"]["platform_commit"])
     args = ap.parse_args()

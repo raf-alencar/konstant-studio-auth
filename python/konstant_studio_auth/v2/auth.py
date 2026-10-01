@@ -36,7 +36,7 @@ from .service_keys import ServiceKeyResolver, route_allowed
 from .snapshot_cache import SnapshotCache
 
 # The platform's tenant ids are UUIDs (see the tenant check in `authorize`).
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)  # fullmatch
 
 ACTOR_KIND = {"human": "human", "agent": "agent", "guest": "guest", "service": "system"}
 
@@ -70,11 +70,12 @@ class Principal:
 
 
 class Result:
-    __slots__ = ("allow", "reason", "status", "principal", "tenant_id", "via_tenant", "roles", "sensitive", "source", "stale")
+    __slots__ = ("allow", "reason", "status", "principal", "tenant_id", "via_tenant", "roles", "sensitive", "source", "stale", "tenant_source")
 
     def __init__(self, allow, reason, principal=None, tenant_id=None, via_tenant=None, roles=None,
-                 sensitive=False, source="none", stale=False):
-        self.allow = bool(allow)
+                 sensitive=False, source="none", stale=False, tenant_source=None):
+        self.allow = allow is True  # exactly True: a truthy string must never read as a yes
+        self.tenant_source = tenant_source
         self.reason = reason
         self.status = status_for(reason, self.allow)
         self.principal = principal
@@ -149,16 +150,18 @@ class Auth:
         self.client = PlatformClient(cfg.platform_url, cfg.platform_key, self.http, cfg.request_timeout_ms, cfg.logger)
         ServiceKeyResolver.validate_accepted(cfg.accepted_caller_services)  # a bad slug is a startup error
         self.service_keys = ServiceKeyResolver(
-            self.client, cfg.accepted_caller_services, cfg.now, cfg.logger,
+            self.client, cfg.accepted_caller_services, cfg.now, cfg.logger, monotonic=cfg.monotonic,
             valid_ttl_seconds=cfg.service_key_cache.valid_ttl_seconds,
             invalid_ttl_seconds=cfg.service_key_cache.invalid_ttl_seconds,
             max_entries=cfg.service_key_cache.max_entries,
+            negative_max_entries=cfg.service_key_cache.negative_max_entries,
+            max_inflight=cfg.service_key_cache.max_inflight,
         )
-        self.clerk = ClerkVerifier(cfg.clerk, self.http, cfg.now, cfg.logger)
+        self.clerk = ClerkVerifier(cfg.clerk, self.http, cfg.now, cfg.logger, monotonic=cfg.monotonic)
         self.cache = (
             SnapshotCache(
                 self.client, cfg.service, cfg.snapshot.ttl_seconds, cfg.snapshot.stale_read_ttl_seconds,
-                cfg.now, cfg.poll_interval_seconds, cfg.logger,
+                cfg.monotonic, cfg.poll_interval_seconds, cfg.logger,
             )
             if cfg.service
             else None
@@ -201,7 +204,7 @@ class Auth:
         self._emit({
             "type": "auth.decision", "ts": _iso(self.config.now()), "service": self.config.service or None,
             "permission": permission, "allow": res.allow, "reason": res.reason, "source": res.source,
-            "stale": res.stale, "tenant_id": res.tenant_id, "via_tenant": res.via_tenant,
+            "stale": res.stale, "tenant_id": res.tenant_id, "via_tenant": res.via_tenant, "tenant_source": res.tenant_source,
             "caller_service": res.principal.service if res.principal and res.principal.kind == "service" else None,
             "actor": res.principal.actor() if res.principal else None,
             "key_id": res.principal.key_id if res.principal else None, "run_id": request_id,
@@ -214,6 +217,8 @@ class Auth:
         """-> (principal, defer_to_platform, denied_reason)"""
         if cred.type == "none":
             return None, False, "no_credential"
+        if cred.type == "invalid":
+            return None, False, "token_invalid"  # an ambiguous credential (a repeated header or cookie) is refused
 
         if cred.type == "clerk":
             try:
@@ -259,10 +264,13 @@ class Auth:
         try:
             body = {"audience_token": cred.raw} if cred.type == "audience" else {"credential": cred.raw}
             res = await self.client.resolve(body)
-            if not res.get("valid"):
-                return {"ok": False, "reason": res.get("reason"), "status": status_for(res.get("reason"), False)}
-            if not isinstance(res.get("principal"), dict):
-                return {"ok": False, "reason": "platform_unavailable", "status": 503}  # a reply that identifies no one
+            if not isinstance(res, dict):
+                return {"ok": False, "reason": "platform_unavailable", "status": 503}
+            if res.get("valid") is False:
+                reason = res["reason"] if isinstance(res.get("reason"), str) else "key_not_found"
+                return {"ok": False, "reason": reason, "status": status_for(reason, False)}
+            if res.get("valid") is not True or not isinstance(res.get("principal"), dict):
+                return {"ok": False, "reason": "platform_unavailable", "status": 503}  # malformed reply: cannot identify anyone
             return {"ok": True, "principal": self._from_summary(res["principal"], res.get("key_id"), principal)}
         except PlatformUnavailable:
             return {"ok": False, "reason": "platform_unavailable", "status": 503}
@@ -277,27 +285,33 @@ class Auth:
 
     # ---- decisions ----------------------------------------------------------
 
-    async def _select_tenant(self, explicit, principal, request):
-        """Which tenant is this request about? In order: the explicit argument (an `x-tenant` header
-        is passed in as one by the adapters); the adopter's tenant_resolver; then the Clerk
-        organization in the session token, mapped through the snapshot's tenant.org_id. The
-        mapping is identity, not authority: whatever tenant comes out, the decision still has to
-        find the user's membership in it (an org the user does not belong to is denied, never
-        silently swapped for one they do). With none, the platform answers tenant_required."""
+    async def _select_tenant(self, explicit, hint, principal, request):
+        """Which tenant is this request about, and where did that come from? In order:
+          1. `explicit`: the route's own tenant scope. Always wins.
+          2. the adopter's tenant_resolver, then
+          3. the Clerk organization in the session token, mapped through the snapshot's tenant.org_id;
+          4. `hint`: the x-tenant header, the weakest source, used only when nothing above named a tenant.
+        So a token whose org maps to a tenant is not moved to another by a header. The mapping is identity,
+        not authority: whatever comes out, the decision still has to find the user's membership in it (an
+        org the user does not belong to is denied, never silently swapped for one they do).
+        Steps 2 and 3 run only for a principal this library has itself verified (a Clerk session): never
+        app code or cache work on behalf of a credential the platform has not yet confirmed.
+        -> (tenant, source)"""
         if explicit:
-            return explicit  # '' is no tenant
-        if principal.kind != "human":
-            return None
-        if self.config.tenant_resolver:
-            t = (await _maybe_await(self.config.tenant_resolver(request, principal))) or None
-            if t:
-                return t
-        org_id = (principal.claims or {}).get("org_id")
-        if org_id and self.cache:
-            snap = await self.cache.get()  # a stale snapshot is fine here: it only names a tenant
-            if snap.state != "none":
-                return next((t["id"] for t in snap.snapshot["tenants"] if t.get("org_id") == org_id), None)
-        return None
+            return explicit, "explicit"  # '' is no tenant
+        if principal.source == "clerk" and principal.kind == "human":
+            if self.config.tenant_resolver:
+                t = (await _maybe_await(self.config.tenant_resolver(request, principal))) or None
+                if t:
+                    return t, "resolver"
+            org_id = (principal.claims or {}).get("org_id")
+            if org_id and self.cache:
+                snap = await self.cache.get()  # a stale snapshot is fine here: it only names a tenant
+                if snap.state != "none":
+                    mapped = next((t["id"] for t in snap.snapshot["tenants"] if t.get("org_id") == org_id), None)
+                    if mapped:
+                        return mapped, "org"
+        return (hint, "hint") if hint else (None, None)
 
     async def _live(self, cred, principal, parsed, resource):
         resource_body = {}
@@ -315,15 +329,29 @@ class Auth:
             res = await self.client.authorize(body)
         except PlatformUnavailable:
             return Result(False, "platform_unavailable", principal=principal)
+
+        # The reply must say exactly true or exactly false, and a yes must identify who it is for and be
+        # about the tenant we asked about; anything else is a malformed platform, not an answer.
+        def malformed():
+            return Result(False, "platform_unavailable", principal=principal)
+
+        if not isinstance(res, dict) or res.get("allow") not in (True, False) or not isinstance(res.get("allow"), bool):
+            return malformed()
+        if res["allow"] is True:
+            if not isinstance(res.get("principal"), dict):
+                return malformed()
+            if resource.get("tenant") and str(res.get("tenant_id")).lower() != str(resource["tenant"]).lower():
+                return malformed()
         p = principal
-        if res.get("principal"):
+        if isinstance(res.get("principal"), dict):
             p = self._from_summary(res["principal"], None, principal)
-        if res.get("allow"):
+        if res["allow"] is True:
             p.tenant = res.get("tenant_id")
             p.roles = res.get("roles") or []
         return Result(
-            res.get("allow"), res.get("reason"), principal=p, tenant_id=res.get("tenant_id"),
-            via_tenant=res.get("via_tenant"), roles=res.get("roles"), sensitive=res.get("sensitive"), source="live",
+            res["allow"], res["reason"] if isinstance(res.get("reason"), str) else "platform_unavailable", principal=p,
+            tenant_id=res.get("tenant_id"), via_tenant=res.get("via_tenant"), roles=res.get("roles"),
+            sensitive=res.get("sensitive") is True, source="live", tenant_source=resource.get("tenant_source"),
         )
 
     async def _decide(self, headers=None, credential=None, permission=None, resource=None, request=None):
@@ -347,13 +375,14 @@ class Auth:
             if principal.kind == "service":
                 return Result(False, "service_principal_not_granted", principal=principal)
 
-            tenant = await self._select_tenant(resource.get("tenant"), principal, request)
+            tenant, tenant_source = await self._select_tenant(resource.get("tenant"), resource.get("tenant_hint"), principal, request)
             # The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name
             # a tenant: answer it here as a denial instead of sending it on and reporting the platform's
             # 422 as an outage (a client mistake must not look like platform_unavailable).
-            if tenant and not _UUID_RE.match(str(tenant)):
+            if tenant and not _UUID_RE.fullmatch(str(tenant)):
                 return Result(False, "tenant_not_found", principal=principal)
-            scoped = {**resource, "tenant": tenant}
+            scoped = {k: v for k, v in resource.items() if k != "tenant_hint"}
+            scoped.update(tenant=tenant, tenant_source=tenant_source)
 
             offline_eligible = (
                 cred.type == "clerk" and self.cache is not None and parsed["service"] == cfg.service and tenant is not None
@@ -375,6 +404,7 @@ class Auth:
             return Result(
                 d["allow"], d["reason"], principal=p, tenant_id=d["tenant_id"], via_tenant=d["via_tenant"],
                 roles=d["roles"], sensitive=d["sensitive"], source="offline", stale=snap.state == "stale",
+                tenant_source=tenant_source,
             )
         except asyncio.CancelledError:
             raise
@@ -428,8 +458,8 @@ class Auth:
 
         if principal.kind == "service":
             return none("service_principal_not_granted")
-        chosen = await self._select_tenant(tenant, principal, request)
-        if chosen and not _UUID_RE.match(str(chosen)):
+        chosen = (await self._select_tenant(tenant, None, principal, request))[0]
+        if chosen and not _UUID_RE.fullmatch(str(chosen)):
             return none("tenant_not_found")
         body = {"include_effective": True}
         if chosen:
@@ -446,9 +476,12 @@ class Auth:
             res = await self.client.resolve(body)
         except PlatformUnavailable:
             return EffectiveResult(False, reason="platform_unavailable", status=503)
-        if not res.get("valid"):
-            return EffectiveResult(False, reason=res.get("reason"), status=status_for(res.get("reason"), False))
-        if not isinstance(res.get("principal"), dict) or not isinstance(res.get("effective"), dict):
+        if not isinstance(res, dict):
+            return EffectiveResult(False, reason="platform_unavailable", status=503)
+        if res.get("valid") is False:
+            reason = res["reason"] if isinstance(res.get("reason"), str) else "key_not_found"
+            return EffectiveResult(False, reason=reason, status=status_for(reason, False))
+        if res.get("valid") is not True or not isinstance(res.get("principal"), dict) or not isinstance(res.get("effective"), dict):
             return EffectiveResult(False, reason="platform_unavailable", status=503)
         p = self._from_summary(res["principal"], res.get("key_id"), principal)
         eff = res["effective"]

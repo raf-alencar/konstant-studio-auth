@@ -78,7 +78,7 @@ def test_state_is_set_and_legacy_shape_is_never_superadmin(rig):
     assert r.status_code == 200
     j = r.json()
     assert j["principal"] == "user_alice" and j["decision"] == "allowed"
-    assert j["legacy"] == {"user_id": "user_alice", "org_id": None, "org_role": None, "is_superadmin": False, "tenant_id": rig.acme}
+    assert j["legacy"] == {"user_id": "user_alice", "clerk_org_id": None, "clerk_org_role": None, "is_superadmin": False, "tenant_id": rig.acme}
 
 
 @pytest.mark.parametrize("headers", [{"Authorization": "Bearer not-a-key-and-not-a-jwt"}, {"Authorization": "Bearer a.b.c"}, {}])
@@ -111,7 +111,7 @@ def test_503_when_platform_down_for_sensitive(rig):
 
 
 def test_sensitive_goes_live_and_allows(rig):
-    rig.h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["admin"], "sensitive": True}
+    rig.h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["admin"], "sensitive": True, "principal": {"id": "p", "kind": "human", "user_id": "user_amy"}}
     r = rig.client.delete("/doc", headers=rig.bearer("amy"))
     assert r.status_code == 200 and rig.h.fake.count("POST", "/v1/authorize") == 1
 
@@ -145,7 +145,7 @@ def test_x_run_id_reaches_the_audit_event(rig):
 
 
 def test_approver_step_up(rig, clerk_keys):
-    rig.h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["approver"], "sensitive": True}
+    rig.h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["approver"], "sensitive": True, "principal": {"id": "p", "kind": "human", "user_id": "user_dan"}}
 
     def tok(**extra):
         now = rig.h.now() // 1000

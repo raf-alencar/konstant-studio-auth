@@ -8,6 +8,7 @@ into an outage, and a forced refresh for an unknown `kid` is throttled so a
 caller cycling kids cannot turn this into an outbound-request cannon.
 """
 
+import asyncio
 import math
 
 from jose import jwt
@@ -15,6 +16,7 @@ from jose.exceptions import JWTError
 
 CACHE_TTL_MS = 5 * 60 * 1000
 FORCE_MIN_INTERVAL_MS = 60 * 1000
+RETRY_AFTER_FAILURE_MS = 10 * 1000  # a JWKS outage must not become a fetch per request
 CLOCK_TOLERANCE_S = 5
 
 
@@ -29,12 +31,15 @@ def _is_num(v):
 
 
 class ClerkVerifier:
-    def __init__(self, cfg, http, now, logger):
+    def __init__(self, cfg, http, now, logger, monotonic=None):
         self.cfg = cfg  # SimpleNamespace(issuer, jwks_url, authorized_parties, audience)
         self.http = http
-        self.now = now
+        self.now = now  # wall clock: token validity
+        self.monotonic = monotonic or now  # cache ages
         self.logger = logger
         self.keys = None
+        self.inflight = None
+        self.next_attempt_at = -math.inf
         self.fetched_at = 0
         self.forced_at = -math.inf
 
@@ -43,21 +48,44 @@ class ClerkVerifier:
         return bool(self.cfg.issuer and self.cfg.jwks_url)
 
     async def _jwks(self, force=False):
-        t = self.now()
+        t = self.monotonic()
         if self.keys is not None and not force and t - self.fetched_at < CACHE_TTL_MS:
             return self.keys
-        if force:
-            if self.keys is not None and t - self.forced_at < FORCE_MIN_INTERVAL_MS:
+        if force and self.keys is not None and t - self.forced_at < FORCE_MIN_INTERVAL_MS:
+            return self.keys
+        # After a failure, keep serving the last good keys (or fail fast with none) instead of
+        # retrying on every request.
+        if t < self.next_attempt_at:
+            if self.keys is not None:
                 return self.keys
+            raise Denied("clerk_jwks_unavailable")
+        if force:
             self.forced_at = t
+        # One fetch at a time: concurrent requests share it.
+        if self.inflight is None:
+            task = asyncio.ensure_future(self._fetch_keys())
+            self.inflight = task
+
+            def _clear(tk):
+                if self.inflight is tk:
+                    self.inflight = None
+                if not tk.cancelled():
+                    tk.exception()
+
+            task.add_done_callback(_clear)
+        return await asyncio.shield(self.inflight)
+
+    async def _fetch_keys(self):
         try:
             resp = await self.http.get(self.cfg.jwks_url, timeout=5, follow_redirects=False)
             if not resp.is_success:
                 raise RuntimeError(f"HTTP {resp.status_code}")
             self.keys = resp.json().get("keys") or []
-            self.fetched_at = t
+            self.fetched_at = self.monotonic()
+            self.next_attempt_at = -math.inf
         except Exception as err:  # noqa: BLE001
             self.logger.warning(f"clerk JWKS refresh failed: {err}")
+            self.next_attempt_at = self.monotonic() + RETRY_AFTER_FAILURE_MS
             if self.keys is None:
                 raise Denied("clerk_jwks_unavailable") from None
         return self.keys

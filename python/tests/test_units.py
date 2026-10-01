@@ -70,9 +70,10 @@ def test_status_mapping():
 
 
 def test_route_allowed():
-    routes = ["GET /v1/docs/*", "* /health", "POST /render"]
+    routes = ["GET /v1/docs/**", "* /health", "POST /render"]
     assert route_allowed(routes, "get", "/v1/docs/123/pages")
     assert not route_allowed(routes, "POST", "/v1/docs/123")
+    assert not route_allowed(["GET /v1/docs/*"], "GET", "/v1/docs/123/pages")  # a single * stays inside one segment
     assert route_allowed(routes, "DELETE", "/health")
     assert route_allowed(routes, "POST", "/render")
     assert not route_allowed(routes, "POST", "/render/extra")
@@ -253,7 +254,7 @@ async def test_approver_and_step_up(make_harness, world, clerk_keys):
     from jose import jwt
 
     h = make_harness()
-    h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["approver"], "sensitive": True}
+    h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["approver"], "sensitive": True, "principal": {"id": "p", "kind": "human", "user_id": "user_dan"}}
     acme = {"tenant": world.id("tenant", "acme")}
 
     def tok(**extra):
@@ -306,7 +307,7 @@ async def test_audit_event_has_no_credential_material(make_harness, world, clerk
         assert s not in blob
     assert events[0]["type"] == "auth.decision" and events[0]["run_id"] == "r1" and events[0]["ts"].endswith("Z")
     assert events[1]["actor"]["key_prefix"] == "stga_"
-    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "caller_service", "actor", "key_id", "run_id"}
+    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "tenant_source", "caller_service", "actor", "key_id", "run_id"}
 
 
 async def test_a_failing_event_sink_never_breaks_a_request(make_harness, world, clerk_keys):

@@ -37,7 +37,7 @@ class SnapshotCache:
         self.service = service
         self.default_ttl = ttl_seconds
         self.default_stale = stale_read_ttl_seconds
-        self.now = now
+        self.now = now  # the MONOTONIC clock: only ages are measured with it
         self.poll_interval_seconds = poll_interval_seconds
         self.logger = logger
         self.entry = None
@@ -82,8 +82,17 @@ class SnapshotCache:
     def _view(self, state):
         return SnapshotView(state, self.entry.body, int((self.now() - self.entry.fetched_at) // 1000))
 
-    async def refresh(self):
-        """One refresh at a time; concurrent callers share it."""
+    async def refresh(self, fresh=False):
+        """One refresh at a time; concurrent callers share it. `fresh` means "I know something changed
+        after any request already in flight started": wait for that one, then run another, so a
+        change is never lost by joining a request that was built before it."""
+        if self._inflight is not None and fresh:
+            try:
+                await asyncio.shield(self._inflight)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the next one decides
+                pass
         if self._inflight is None:
             task = asyncio.ensure_future(self._refresh())
             self._inflight = task
@@ -117,8 +126,8 @@ class SnapshotCache:
         if feed.get("events"):
             # Move the cursor only once the refresh has succeeded: if it fails, the next poll
             # must see the same events again instead of losing them until the TTL runs out.
-            await self.refresh()
-            self.cursor = feed["next_cursor"]
+            await self.refresh(fresh=True)
+            self.cursor = max(self.cursor, feed["next_cursor"])
             return True
         return False
 

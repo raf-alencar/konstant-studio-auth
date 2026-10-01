@@ -1,21 +1,22 @@
-"""Runs the shared vectors (test-vectors/vectors.json) against the library with a fake
-platform. Node runs the very same file. `pending-platform` cases are skipped with their
-reason: they describe the end state once the platform resolves service keys, and are
-deliberately not asserted against the stub.
+"""Runs the shared vectors (test-vectors/vectors.json) against the library with a fake platform. Node
+runs the very same file: decision cases, credential extraction, and the route policy. No vector is
+skipped: the inbound-service-key cases run against a fake that implements the platform's final
+contract (mandatory expect_service, uniform key_not_found).
 """
 
 import pytest
+from starlette.datastructures import Headers
 
+from konstant_studio_auth.v2.credentials import extract
 from konstant_studio_auth.v2.reasons import COARSE_OFFLINE
+from konstant_studio_auth.v2.service_keys import route_allowed
 from world import VECTORS, mint_clerk_token
 
 CFG = VECTORS["config"]
 
 
-def _params():
-    for c in VECTORS["cases"]:
-        marks = [pytest.mark.skip(reason=c["pending"])] if c.get("pending") else []
-        yield pytest.param(c, id=c["id"], marks=marks)
+def test_no_vector_is_pending():
+    assert not [c["id"] for c in VECTORS["cases"] if c.get("pending")]
 
 
 def headers_for(c, world, keys, now):
@@ -45,7 +46,7 @@ def resource_for(c, world):
     return r
 
 
-@pytest.mark.parametrize("c", _params())
+@pytest.mark.parametrize("c", VECTORS["cases"], ids=lambda c: c["id"])
 async def test_shared_vector(c, make_harness, world, clerk_keys):
     resolver = None
     if c["ask"].get("resolver_tenant"):
@@ -53,24 +54,38 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
         resolver = lambda req, principal: tid  # noqa: E731
     h = make_harness(tenant_resolver=resolver)
     exp = c["expect"]
-    h.fake.live = exp
-    down_cached = c.get("cache_age_s") is not None
+    key = next((k for k in world.spec["keys"] if k["ref"] == c["who"].get("key")), None)
+    is_service_key = bool(key and key["kind"] == "service")
 
-    if down_cached:
+    if c.get("resolve_only"):
+        # identity only: the library asked each accepted caller service, and every failure is the same uniform answer
+        r = await h.auth.resolve_principal(headers=headers_for(c, world, clerk_keys, h.now()))
+        if exp["allow"]:
+            assert r["ok"] is True
+            p = r["principal"]
+            assert (p.kind, p.service, p.tenant) == (exp["principal"]["kind"], exp["principal"]["service"], exp["principal"]["tenant"])
+            assert not hasattr(p, "routes"), "the platform's allowed_routes are not exposed as this app's policy"
+        else:
+            assert (r["ok"], r["reason"], r["status"]) == (False, exp["reason"], exp["status"])
+        return
+
+    # a real platform names who an allow is for
+    h.fake.live = {**exp, "principal": h.fake._principal_summary(world.principal(c["who"]["clerk"]))} if c["who"].get("clerk") else exp
+    if c.get("cache_age_s") is not None:
         await h.auth.cache.get()  # prime while the platform is up, then let the consumer's clock run
         h.advance(c["cache_age_s"])
     if c.get("platform") == "down":
         h.fake.down = True
     h.fake.calls.clear()
 
-    token_now = h.now() - c["cache_age_s"] * 1000 if down_cached else h.now()
+    token_now = h.now() - c["cache_age_s"] * 1000 if c.get("cache_age_s") is not None else h.now()
     d = await h.auth.authorize(headers=headers_for(c, world, clerk_keys, token_now), permission=c["ask"]["permission"], resource=resource_for(c, world))
 
     coarse = exp.get("offline_reason")
     assert d.allow == exp["allow"], f"allow (reason {d.reason})"
     assert d.reason == (coarse or exp["reason"])
     assert d.status == exp["status"]
-    assert d.source == exp["source"]
+    assert d.source == exp.get("source", "none")
     assert d.stale == bool(exp.get("stale"))
     if not coarse:
         assert d.tenant_id == world.id("tenant", exp.get("tenant"))
@@ -84,10 +99,51 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     # decision is exactly one call (and no separate resolve). Skipped when the platform is down,
     # where the library correctly TRIES the call and it fails.
     if c.get("platform") != "down":
-        assert h.fake.count("POST", "/v1/authorize") == (1 if exp["source"] == "live" else 0), "authorize calls"
-        assert h.fake.count("POST", "/v1/principals/resolve") == 0, "decisions never need a separate resolve"
+        assert h.fake.count("POST", "/v1/authorize") == (1 if exp.get("source") == "live" else 0), "authorize calls"
+        if not is_service_key:
+            assert h.fake.count("POST", "/v1/principals/resolve") == 0, "decisions never need a separate resolve"
 
 
 def test_offline_denials_use_only_documented_coarse_reasons():
     for c in (x for x in VECTORS["cases"] if x["expect"].get("offline_reason")):
         assert COARSE_OFFLINE[c["expect"]["reason"]] == c["expect"]["offline_reason"], c["id"]
+
+
+# ---- credential extraction: both languages must read a request the same way ---------------------
+
+
+def _asdict(spec):
+    # A list value is a header sent more than once; a plain dict carries it joined with ", " (as Express does).
+    return {k: ", ".join(v) if isinstance(v, list) else v for k, v in spec.items()}
+
+
+def _starlette(spec):
+    # Starlette keeps a repeated header as separate entries.
+    raw = [(k.lower().encode(), one.encode()) for k, v in spec.items() for one in ([v] if isinstance(v, str) else v)]
+    return Headers(raw=raw)
+
+
+@pytest.mark.parametrize("c", VECTORS["extraction"]["cases"], ids=lambda c: c["id"])
+@pytest.mark.parametrize("build", [_asdict, _starlette], ids=["dict", "starlette"])
+def test_shared_extraction_vector(c, build):
+    got = extract(build(c["headers"]))
+    assert got.type == c["expect"]["type"]
+    if "key_kind" in c["expect"]:
+        assert got.key_kind == c["expect"]["key_kind"]
+
+
+def test_extraction_never_raises_whatever_the_headers_hold():
+    nasty = ["%", "%%", "%E0%A4%A", "\u0000", "a" * 100000, "=", ";;;", "__session=", "__session=%"]
+    for v in nasty:
+        extract({"cookie": v})
+        extract({"cookie": f"__session={v}"})
+        extract({"authorization": v, "x-api-key": v})
+        extract(_starlette({"cookie": v}))
+
+
+# ---- the app's route policy: both languages pin the same path semantics -------------------------
+
+
+@pytest.mark.parametrize("c", VECTORS["route_policy"]["cases"], ids=lambda c: c["id"])
+def test_shared_route_policy_vector(c):
+    assert route_allowed(c["routes"], c["method"], c["path"]) is c["allow"], f"{c['method']} {c['path']!r}"

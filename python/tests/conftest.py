@@ -27,9 +27,10 @@ def world():
 class Harness:
     """A create_auth() wired to a FakePlatform with a controllable clock."""
 
-    def __init__(self, world, keys, **overrides):
+    def __init__(self, world, keys, separate_monotonic=False, **overrides):
         self.world = world
         self.clock = world.now_ms
+        self.mono = 0
         self.fake = FakePlatform(world, keys, JWKS_URL)
         opts = dict(
             service=CFG["service"],
@@ -43,10 +44,21 @@ class Harness:
             transport=self.fake.transport,
             logger=SilentLogger(),
         )
+        if separate_monotonic:
+            opts["monotonic"] = lambda: self.mono  # cache ages; the wall clock (`now`) governs token validity
         opts.update(overrides)
         self.auth = create_auth(**opts)
 
     def advance(self, seconds):
+        self.clock += int(seconds * 1000)
+
+    def tick(self, seconds):
+        """Real time passes: both clocks move (only meaningful with separate_monotonic)."""
+        self.clock += int(seconds * 1000)
+        self.mono += int(seconds * 1000)
+
+    def jump(self, seconds):
+        """The wall clock is stepped (NTP, manual change); no monotonic time passes."""
         self.clock += int(seconds * 1000)
 
     def now(self):

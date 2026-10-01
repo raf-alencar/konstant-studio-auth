@@ -11,6 +11,7 @@ const RETRY_AFTER_FAILURE_MS = 1000;
 
 class SnapshotCache {
   constructor({ client, service, ttlSeconds, staleReadTtlSeconds, now, pollIntervalSeconds, logger }) {
+    // `now` here is the MONOTONIC clock: only ages are measured with it.
     this.client = client;
     this.service = service;
     this.defaultTtl = ttlSeconds;
@@ -64,8 +65,17 @@ class SnapshotCache {
     };
   }
 
-  // One refresh at a time; concurrent callers share it.
-  refresh() {
+  // One refresh at a time; concurrent callers share it. `fresh` means "I know something changed
+  // after any request already in flight started": wait for that one, then run another, so a
+  // change is never lost by joining a request that was built before it.
+  async refresh({ fresh = false } = {}) {
+    if (this._inflight && fresh) {
+      try {
+        await this._inflight;
+      } catch {
+        /* the next one decides */
+      }
+    }
     if (!this._inflight) {
       this._inflight = this._refresh().finally(() => {
         this._inflight = null;
@@ -94,7 +104,7 @@ class SnapshotCache {
     if (feed.events?.length) {
       // Advance the cursor only once the refresh succeeded: if it fails, the next
       // poll sees the same events again instead of the change being lost until the TTL.
-      await this.refresh();
+      await this.refresh({ fresh: true });
       this.cursor = Math.max(this.cursor, feed.next_cursor);
       return true;
     }

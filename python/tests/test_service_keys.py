@@ -31,14 +31,15 @@ def hdr(world, ref):
     return {"x-api-key": world.raw_key(key_of(world, ref))}
 
 
-def _pending_service_cases():
+def _service_key_cases():
+    # Every service-key vector, once more through the contract-note fake (they also run in the shared runner).
     for c in VECTORS["cases"]:
-        if c.get("pending") and c["who"].get("key", "").startswith("svc_"):
+        if c["who"].get("key", "").startswith("svc_"):
             yield pytest.param(c, id=c["id"])
 
 
-@pytest.mark.parametrize("c", _pending_service_cases())
-async def test_pending_vectors_against_the_contract_note_fake(c, make_harness, world):
+@pytest.mark.parametrize("c", _service_key_cases())
+async def test_service_key_vectors_against_the_contract_note_fake(c, make_harness, world):
     h = make_harness()
     exp = c["expect"]
     headers = hdr(world, c["who"]["key"])
@@ -156,14 +157,14 @@ def _iso(ms):
 
 
 async def test_resolution_cache_is_bounded(make_harness):
-    h = make_harness(service_key_cache={"max_entries": 5})
+    h = make_harness(service_key_cache={"negative_max_entries": 5})
     for i in range(50):
         await h.auth.resolve_principal(headers={"x-api-key": "stgs_" + str(i).zfill(40)})
-    assert len(h.auth.service_keys.cache) <= 5
-    # expired entries go first, then the oldest
+    assert len(h.auth.service_keys.negative) <= 5
+    # expired entries go first, then the least recently used
     h.advance(11)
     await h.auth.resolve_principal(headers={"x-api-key": "stgs_" + "9" * 40})
-    assert len(h.auth.service_keys.cache) <= 5
+    assert len(h.auth.service_keys.negative) <= 5
 
 
 async def test_platform_outage_is_not_cached_as_a_verdict(make_harness, world):
@@ -265,7 +266,8 @@ def test_wiring_errors(make_harness):
 
 
 def test_route_allowed_globs():
-    assert route_allowed(["GET /internal/status/*"], "get", "/internal/status/1/2")
+    assert route_allowed(["GET /internal/status/**"], "get", "/internal/status/1/2")
+    assert not route_allowed(["GET /internal/status/*"], "get", "/internal/status/1/2")
     assert not route_allowed(["GET /internal/status/*"], "GET", "/internal/other")
     assert not route_allowed(["POST /a.b"], "POST", "/aXb")
 

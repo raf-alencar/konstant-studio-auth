@@ -26,7 +26,8 @@ function expressAdapter(core) {
   async function run(req, res, next, permission, scope, { approver, stepUp } = {}) {
     try {
       const resource = await resolveScope(scope, req);
-      if (!resource.tenant && req.headers['x-tenant']) resource.tenant = String(req.headers['x-tenant']);
+      // The x-tenant header is only a HINT, the weakest source of the tenant (see selectTenant).
+      if (req.headers['x-tenant']) resource.tenantHint = String(req.headers['x-tenant']);
       const requestId = cleanRunId(req.headers['x-run-id']);
       const args = { headers: req.headers, permission, resource, req, requestId };
       const d = approver ? await core.authorizeApprover({ ...args, stepUp }) : await core.authorize(args);
@@ -56,7 +57,9 @@ function expressAdapter(core) {
     requireServiceCaller: (policy) => {
       validatePolicy(policy, cfg.acceptedCallerServices);
       return async (req, res, next) => {
-        const d = await core.authorizeServiceCaller({ headers: req.headers, method: req.method, path: req.path, policy });
+        // The path as SENT (undecoded, unnormalised, including the mount prefix), without the query string.
+        const rawPath = String(req.originalUrl ?? req.url).split(/[?#]/)[0];
+        const d = await core.authorizeServiceCaller({ headers: req.headers, method: req.method, path: rawPath, policy });
         if (!d.allow) return send(res, d);
         req.principal = d.principal;
         req.authDecision = d;

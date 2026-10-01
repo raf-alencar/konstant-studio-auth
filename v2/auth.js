@@ -61,13 +61,13 @@ function createAuth(opts = {}) {
   });
   ServiceKeyResolver.validateAccepted(cfg.acceptedCallerServices); // a bad slug is a startup error
   const serviceKeys = new ServiceKeyResolver({
-    client, accepted: cfg.acceptedCallerServices, now: cfg.now, logger: cfg.logger, ...cfg.serviceKeyCache,
+    client, accepted: cfg.acceptedCallerServices, now: cfg.now, monotonic: cfg.monotonic, logger: cfg.logger, ...cfg.serviceKeyCache,
   });
-  const clerk = new ClerkVerifier(cfg.clerk, { fetch: cfg.fetch, now: cfg.now, logger: cfg.logger });
+  const clerk = new ClerkVerifier(cfg.clerk, { fetch: cfg.fetch, now: cfg.now, monotonic: cfg.monotonic, logger: cfg.logger });
   const cache = cfg.service
     ? new SnapshotCache({
         client, service: cfg.service, ttlSeconds: cfg.snapshot.ttlSeconds,
-        staleReadTtlSeconds: cfg.snapshot.staleReadTtlSeconds, now: cfg.now,
+        staleReadTtlSeconds: cfg.snapshot.staleReadTtlSeconds, now: cfg.monotonic,
         pollIntervalSeconds: cfg.pollIntervalSeconds, logger: cfg.logger,
       })
     : null;
@@ -82,13 +82,13 @@ function createAuth(opts = {}) {
   }
 
   function result(fields) {
-    const allow = !!fields.allow;
+    const allow = fields.allow === true; // exactly true: a truthy string must never read as a yes
     return {
       allow, reason: fields.reason, status: statusFor(fields.reason, allow),
       principal: fields.principal ?? null, tenantId: fields.tenantId ?? null,
       viaTenant: fields.viaTenant ?? null, roles: fields.roles ?? [],
       sensitive: !!fields.sensitive, source: fields.source ?? 'none',
-      stale: !!fields.stale,
+      stale: !!fields.stale, tenantSource: fields.tenantSource ?? null,
     };
   }
 
@@ -98,7 +98,7 @@ function createAuth(opts = {}) {
     emit({
       type: 'auth.decision', ts: new Date(cfg.now()).toISOString(), service: cfg.service || null,
       permission, allow: res.allow, reason: res.reason, source: res.source, stale: res.stale,
-      tenant_id: res.tenantId, via_tenant: res.viaTenant,
+      tenant_id: res.tenantId, via_tenant: res.viaTenant, tenant_source: res.tenantSource,
       caller_service: res.principal?.kind === 'service' ? res.principal.service : null,
       actor: res.principal ? res.principal.actor() : null,
       key_id: res.principal?.keyId ?? null, run_id: requestId ?? null,
@@ -161,8 +161,8 @@ function createAuth(opts = {}) {
     try {
       const body = cred.type === 'audience' ? { audience_token: cred.raw } : { credential: cred.raw };
       const res = await client.resolve(body);
-      if (!res.valid) return { ok: false, reason: res.reason, status: statusFor(res.reason, false) };
-      if (!res.principal) return { ok: false, reason: 'platform_unavailable', status: 503 }; // malformed reply: cannot identify anyone
+      if (res.valid === false) return { ok: false, reason: typeof res.reason === 'string' ? res.reason : 'key_not_found', status: statusFor(res.reason, false) };
+      if (res.valid !== true || !res.principal) return { ok: false, reason: 'platform_unavailable', status: 503 }; // malformed reply: cannot identify anyone
       return { ok: true, principal: fromPlatformSummary(res.principal, res.key_id, found.principal) };
     } catch (err) {
       if (err instanceof PlatformUnavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
@@ -179,25 +179,31 @@ function createAuth(opts = {}) {
 
   // ---- decisions ------------------------------------------------------------
 
-  // Which tenant is this request about? In order: the explicit argument (an `x-tenant` header
-  // is passed in as one by the adapters); the adopter's tenantResolver; then the Clerk
-  // organization in the session token, mapped through the snapshot's tenant.org_id. The
-  // mapping is identity, not authority: whatever tenant comes out, the decision still has to
-  // find the user's membership in it (an org the user does not belong to is denied, never
-  // silently swapped for one they do). With none, the platform answers tenant_required.
-  async function selectTenant(explicit, principal, req) {
-    if (explicit) return explicit; // '' is no tenant
-    if (principal.kind !== 'human') return null;
-    if (cfg.tenantResolver) {
-      const t = (await cfg.tenantResolver(req, principal)) ?? null;
-      if (t) return t;
+  // Which tenant is this request about, and where did that come from? In order:
+  //   1. `explicit`: the route's own tenant scope. Always wins.
+  //   2. the adopter's tenantResolver, then
+  //   3. the Clerk organization in the session token, mapped through the snapshot's tenant.org_id;
+  //   4. `hint`: the x-tenant header, the weakest source, used only when nothing above named a tenant.
+  // So a token whose org maps to a tenant is not moved to another by a header. The mapping is identity,
+  // not authority: whatever comes out, the decision still has to find the user's membership in it (an
+  // org the user does not belong to is denied, never silently swapped for one they do).
+  // Steps 2 and 3 run only for a principal this library has itself verified (a Clerk session): never
+  // app code or cache work on behalf of a credential the platform has not yet confirmed.
+  async function selectTenant(explicit, hint, principal, req) {
+    if (explicit) return { tenant: explicit, source: 'explicit' }; // '' is no tenant
+    if (principal.source === 'clerk' && principal.kind === 'human') {
+      if (cfg.tenantResolver) {
+        const t = (await cfg.tenantResolver(req, principal)) ?? null;
+        if (t) return { tenant: t, source: 'resolver' };
+      }
+      const orgId = principal.claims?.org_id;
+      if (orgId && cache) {
+        const snap = await cache.get(); // a stale snapshot is fine here: it only names a tenant
+        const mapped = snap.state !== 'none' ? snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id : undefined;
+        if (mapped) return { tenant: mapped, source: 'org' };
+      }
     }
-    const orgId = principal.claims?.org_id;
-    if (orgId && cache) {
-      const snap = await cache.get(); // a stale snapshot is fine here: it only names a tenant
-      if (snap.state !== 'none') return snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id ?? null;
-    }
-    return null;
+    return hint ? { tenant: hint, source: 'hint' } : { tenant: null, source: null };
   }
 
   async function live(cred, principal, parsed, resource) {
@@ -218,12 +224,21 @@ function createAuth(opts = {}) {
       if (err instanceof PlatformUnavailable) return result({ allow: false, reason: 'platform_unavailable', principal });
       throw err;
     }
+    // The reply must say exactly true or exactly false, and a yes must identify who it is for and be
+    // about the tenant we asked about; anything else is a malformed platform, not an answer.
+    const malformed = () => result({ allow: false, reason: 'platform_unavailable', principal });
+    if (res?.allow !== true && res?.allow !== false) return malformed();
+    if (res.allow === true) {
+      if (!res.principal || typeof res.principal !== 'object') return malformed();
+      if (resource.tenant && String(res.tenant_id).toLowerCase() !== String(resource.tenant).toLowerCase()) return malformed();
+    }
     let p = principal;
-    if (res.principal) p = fromPlatformSummary(res.principal, null, principal);
-    if (res.allow) { p.tenant = res.tenant_id ?? null; p.roles = res.roles ?? []; }
+    if (res.principal && typeof res.principal === 'object') p = fromPlatformSummary(res.principal, null, principal);
+    if (res.allow === true) { p.tenant = res.tenant_id ?? null; p.roles = res.roles ?? []; }
     return result({
-      allow: res.allow, reason: res.reason, principal: p, tenantId: res.tenant_id,
-      viaTenant: res.via_tenant, roles: res.roles, sensitive: res.sensitive, source: 'live',
+      allow: res.allow, reason: typeof res.reason === 'string' ? res.reason : 'platform_unavailable', principal: p,
+      tenantId: res.tenant_id, viaTenant: res.via_tenant, roles: res.roles, sensitive: res.sensitive === true, source: 'live',
+      tenantSource: resource.tenantSource ?? null,
     });
   }
 
@@ -246,12 +261,14 @@ function createAuth(opts = {}) {
         return result({ allow: false, reason: 'service_principal_not_granted', principal });
       }
 
-      let tenant = await selectTenant(resource.tenant, principal, req);
+      const picked = await selectTenant(resource.tenant, resource.tenantHint, principal, req);
+      const tenant = picked.tenant;
       // The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name a
       // tenant: answer it here as a denial instead of sending it on and reporting the platform's 422
       // as an outage (a client mistake must not look like platform_unavailable).
       if (tenant && !UUID_RE.test(String(tenant))) return result({ allow: false, reason: 'tenant_not_found', principal });
-      const scoped = { ...resource, tenant };
+      const { tenantHint: _hint, ...rest } = resource;
+      const scoped = { ...rest, tenant, tenantSource: picked.source };
 
       const offlineEligible =
         cred.type === 'clerk' && cache && parsed.service === cfg.service && tenant !== null;
@@ -271,7 +288,7 @@ function createAuth(opts = {}) {
       const p = new Principal({ ...principal, tenant: d.tenantId, ancestry: d.ancestry ?? [], roles: d.roles, permissions: d.permissions });
       return result({
           allow: d.allow, reason: d.reason, principal: p, tenantId: d.tenantId, viaTenant: d.viaTenant,
-          roles: d.roles, sensitive: d.sensitive, source: 'offline', stale: snap.state === 'stale',
+          roles: d.roles, sensitive: d.sensitive, source: 'offline', stale: snap.state === 'stale', tenantSource: picked.source,
         });
     } catch (err) {
       // A bug must never read as an allow. Log the class only (messages can echo input).
@@ -338,7 +355,7 @@ function createAuth(opts = {}) {
     const none = (reason, extra = {}) => ({ ok: true, principal, tenantId: null, reason, permissions: [], permits: () => false, ...extra });
     if (principal.kind === 'service') return none('service_principal_not_granted');
 
-    const chosen = await selectTenant(tenant, principal, req);
+    const chosen = (await selectTenant(tenant, undefined, principal, req)).tenant;
     if (chosen && !UUID_RE.test(String(chosen))) return none('tenant_not_found');
     const body = {
       include_effective: true,
@@ -353,8 +370,8 @@ function createAuth(opts = {}) {
       if (err instanceof PlatformUnavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
       throw err;
     }
-    if (!res.valid) return { ok: false, reason: res.reason, status: statusFor(res.reason, false) };
-    if (!res.principal || !res.effective) return { ok: false, reason: 'platform_unavailable', status: 503 };
+    if (res.valid === false) return { ok: false, reason: typeof res.reason === 'string' ? res.reason : 'key_not_found', status: statusFor(res.reason, false) };
+    if (res.valid !== true || !res.principal || !res.effective) return { ok: false, reason: 'platform_unavailable', status: 503 };
     const p = fromPlatformSummary(res.principal, res.key_id, principal);
     const eff = res.effective;
     p.tenant = eff.tenant_id ?? null;

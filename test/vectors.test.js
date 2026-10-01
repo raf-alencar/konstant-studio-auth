@@ -6,6 +6,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createAuth } = require('../v2');
+const { extract } = require('../v2/credentials');
+const { routeAllowed } = require('../v2/service-keys');
 const { VECTORS, World, FakePlatform, newClerkKeys, mintClerkToken } = require('./helpers/world');
 const { COARSE_OFFLINE } = require('../v2/reasons');
 
@@ -24,6 +26,7 @@ async function setup(c, keys) {
     clerk: { issuer: VECTORS.config.clerk.issuer, jwksUrl: JWKS_URL, authorizedParties: VECTORS.config.clerk.authorized_parties },
     snapshot: { ttlSeconds: VECTORS.config.snapshot_ttl_seconds, staleReadTtlSeconds: VECTORS.config.stale_read_ttl_seconds },
     pollIntervalSeconds: 0,
+    acceptedCallerServices: VECTORS.config.accepted_caller_services,
     now: () => clock,
     fetch: fake.fetch,
     logger: silent,
@@ -63,7 +66,20 @@ test('shared vectors', async (t) => {
     await t.test(c.id, async () => {
       const { fake, auth, advance, now } = await setup(c, keys);
       const exp = c.expect;
-      fake.live = exp;
+      const isServiceKey = !!c.who.key && world.spec.keys.find((k) => k.ref === c.who.key).kind === 'service';
+      if (c.resolve_only) {
+        // identity only: the library asked each accepted caller service, and every failure is the same uniform answer
+        const r = await auth.resolvePrincipal({ headers: await headersFor(c, keys, now()) });
+        if (exp.allow) {
+          assert.equal(r.ok, true);
+          assert.deepEqual([r.principal.kind, r.principal.service, r.principal.tenant], [exp.principal.kind, exp.principal.service, exp.principal.tenant]);
+          assert.equal('routes' in r.principal, false, "the platform's allowed_routes are not exposed as this app's policy");
+        } else {
+          assert.deepEqual([r.ok, r.reason, r.status], [false, exp.reason, exp.status]);
+        }
+        return;
+      }
+      fake.live = c.who.clerk ? { ...exp, principal: fake._principalSummary(world.principal(c.who.clerk)) } : exp; // a real platform names who an allow is for
 
       if (c.cache_age_s != null) {
         await auth.cache.get(); // prime while the platform is up, then let the consumer's clock run
@@ -78,7 +94,7 @@ test('shared vectors', async (t) => {
       assert.equal(d.allow, exp.allow, `allow (reason ${d.reason})`);
       assert.equal(d.reason, coarse ?? exp.reason);
       assert.equal(d.status, exp.status);
-      assert.equal(d.source, exp.source);
+      assert.equal(d.source, exp.source ?? 'none');
       assert.equal(d.stale, !!exp.stale);
       if (!coarse) assert.equal(d.tenantId, world.id('tenant', exp.tenant));
       assert.equal(d.viaTenant, world.id('tenant', exp.via_tenant));
@@ -90,7 +106,7 @@ test('shared vectors', async (t) => {
       // where the library correctly TRIES the call and it fails.
       if (c.platform !== 'down') {
         assert.equal(fake.count('POST', '/v1/authorize'), exp.source === 'live' ? 1 : 0, 'authorize calls');
-        assert.equal(fake.count('POST', '/v1/principals/resolve'), 0, 'decisions never need a separate resolve');
+        if (!isServiceKey) assert.equal(fake.count('POST', '/v1/principals/resolve'), 0, 'decisions never need a separate resolve');
       }
     });
   }
@@ -99,5 +115,44 @@ test('shared vectors', async (t) => {
 test('offline denials use only the documented coarse reasons', () => {
   for (const c of VECTORS.cases.filter((x) => x.expect.offline_reason)) {
     assert.equal(COARSE_OFFLINE[c.expect.reason], c.expect.offline_reason, c.id);
+  }
+});
+
+// ---- credential extraction: both languages must read a request the same way -----------------
+function asHeaders(spec) {
+  // A list value is a header sent more than once; Express and Fetch Headers hand that over joined with ", ".
+  return Object.fromEntries(Object.entries(spec).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v]));
+}
+
+test('shared extraction vectors', async (t) => {
+  for (const c of VECTORS.extraction.cases) {
+    await t.test(c.id, () => {
+      const got = extract(asHeaders(c.headers));
+      assert.equal(got.type, c.expect.type);
+      if ('key_kind' in c.expect) assert.equal(got.keyKind, c.expect.key_kind);
+    });
+    await t.test(`${c.id} (Fetch Headers)`, () => {
+      const h = new Headers();
+      for (const [k, v] of Object.entries(c.headers)) for (const one of [].concat(v)) h.append(k, one);
+      const got = extract(h);
+      assert.equal(got.type, c.expect.type);
+      if ('key_kind' in c.expect) assert.equal(got.keyKind, c.expect.key_kind);
+    });
+  }
+});
+
+test('extraction never throws, whatever the headers hold', () => {
+  const nasty = ['%', '%%', '%E0%A4%A', '\u0000', 'a'.repeat(100000), '=', ';;;', '__session=', '__session=%'];
+  for (const v of nasty) {
+    assert.doesNotThrow(() => extract({ cookie: v }));
+    assert.doesNotThrow(() => extract({ cookie: `__session=${v}` }));
+    assert.doesNotThrow(() => extract({ authorization: v, 'x-api-key': v }));
+  }
+});
+
+// ---- the app's route policy: both languages pin the same path semantics ---------------------
+test('shared route-policy vectors', async (t) => {
+  for (const c of VECTORS.route_policy.cases) {
+    await t.test(c.id, () => assert.equal(routeAllowed(c.routes, c.method, c.path), c.allow, `${c.method} ${JSON.stringify(c.path)}`));
   }
 });

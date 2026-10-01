@@ -21,7 +21,7 @@ function libraryFor(ctx, extra = {}) {
   return createAuth({
     service: VECTORS.config.service, platformUrl: ctx.state.platform_url, platformKey: ctx.state.service_key,
     clerk: { issuer: ctx.state.issuer, jwksUrl: ctx.state.jwks_url, authorizedParties: [ctx.state.authorized_party] },
-    pollIntervalSeconds: 0, logger: silent, ...extra,
+    acceptedCallerServices: VECTORS.config.accepted_caller_services, pollIntervalSeconds: 0, logger: silent, ...extra,
   });
 }
 
@@ -96,6 +96,31 @@ test('parity with the scratch platform', async (t) => {
       await t.test(c.id, { skip: c.pending || c.parity_note || 'needs a down platform: covered by the unit vectors' }, () => {});
       continue;
     }
+    if (c.resolve_only) {
+      // Identity only (inbound service keys): the library's answer, and what the platform says to each expect_service we would send.
+      await t.test(c.id, async () => {
+        const exp = c.expect;
+        const auth = libraryFor(ctx);
+        const lib = await auth.resolvePrincipal({ headers: { 'x-api-key': ctx.state.keys[c.who.key] } });
+        auth.close();
+        const asked = [];
+        for (const service of VECTORS.config.accepted_caller_services) {
+          const r = await fetch(`${ctx.state.platform_url}/v1/principals/resolve`, { method: 'POST', headers: { 'X-API-Key': ctx.state.shared_key, 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: ctx.state.keys[c.who.key], expect_service: service }) });
+          asked.push([service, await r.json()]);
+        }
+        const matches = asked.filter(([, b]) => b.valid === true).map(([sv]) => sv);
+        if (exp.allow) {
+          assert.deepEqual(matches, [exp.principal.service], 'the platform matches exactly the key\'s own service');
+          assert.equal(lib.ok, true);
+          assert.deepEqual([lib.principal.kind, lib.principal.service, lib.principal.tenant], [exp.principal.kind, exp.principal.service, exp.principal.tenant]);
+        } else {
+          assert.deepEqual(matches, []);
+          assert.ok(asked.every(([, b]) => b.valid === false && b.reason === 'key_not_found'), 'the fixed platform answers every failure with the same uniform reason');
+          assert.deepEqual([lib.ok, lib.reason, lib.status], [false, exp.reason, exp.status]);
+        }
+      });
+      continue;
+    }
     await t.test(c.id, async () => {
       const exp = c.expect;
       const { headers } = await credential(ctx, c);
@@ -114,7 +139,7 @@ test('parity with the scratch platform', async (t) => {
 
       assert.equal(lib.allow, truth.allow, `library said ${lib.reason}, platform said ${truth.reason}`);
       assert.equal(lib.reason, lib.source === 'offline' ? COARSE_OFFLINE[truth.reason] ?? truth.reason : truth.reason);
-      assert.equal(lib.source, exp.source);
+      assert.equal(lib.source, exp.source ?? 'none');
       if (truth.allow) {
         assert.equal(lib.tenantId, truth.tenant_id);
         assert.equal(lib.viaTenant, truth.via_tenant);

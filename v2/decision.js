@@ -46,11 +46,14 @@ function inWindow(t, nowMs) {
   return true;
 }
 
-function decideOffline(snapshot, { userId, kind = 'human' }, service, action, resource, nowMs) {
+function decideOffline(snapshot, { userId, kind }, service, action, resource, nowMs) {
   const deny = (reason, tenantId = null, sensitive = false) => ({
     allow: false, reason, tenantId, viaTenant: null, roles: [], permissions: [], sensitive,
   });
 
+  // Only a human's membership is in a snapshot to be read; any other kind (including "unknown", null) is
+  // decided by the platform. Refuse rather than let a null kind match nothing by accident.
+  if (kind !== 'human') return deny('principal_kind_restricted');
   const perm = snapshot.permissions.find((p) => p.action === action);
   if (snapshot.service !== service || !perm) return deny('unknown_permission');
   const sensitive = !!perm.sensitive;

@@ -2,9 +2,9 @@
   "$comment": "Shared test vectors for @konstant-studio/auth v2 (Node and Python consume this same file). Every value here is fake. `world` is what the platform would hold; `cases` are what the library must answer. `reason` is the PLATFORM's answer (parity-tested against /v1/authorize on a scratch copy of the C0b branch); `offline_reason` is set only where an offline decision cannot tell reasons apart and uses a coarser (still denying) one.",
   "version": 1,
   "contract": {
-    "platform_commit": "79f4fce",
+    "platform_commit": "833538787f7bf4416909dbcf79ed397337ece0fe",
     "platform_branch": "feat/control-plane-c0a-c0b",
-    "note": "Pinned at the committed C0b2. The CoS's C0b2 fixes (mandatory expect_service, uniform key_not_found, audit bounds) are still to land; the service-key cases below follow the CoS contract note and stay pending-platform until they do."
+    "note": "Pinned at the accepted C0b2 with its fixes (guard first, mandatory expect_service, uniform key_not_found, audit bounds)."
   },
   "config": {
     "service": "docs",
@@ -1936,7 +1936,6 @@
     {
       "id": "service-key-resolves",
       "desc": "an accepted caller service's key resolves to a service principal {kind: service, service, tenant: null}; the library asked with expect_service for each accepted service",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_active"
       },
@@ -1955,7 +1954,6 @@
     {
       "id": "service-key-second-accepted-service",
       "desc": "every accepted caller service is tried; the match is the key's own service",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_video_active"
       },
@@ -1974,7 +1972,6 @@
     {
       "id": "service-key-unaccepted-service",
       "desc": "a valid key from a service this app does not accept is refused with the SAME answer as an unknown key",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_docs_active"
       },
@@ -1989,7 +1986,6 @@
     {
       "id": "service-key-revoked",
       "desc": "revoked: uniform key_not_found (the specific reason is the platform's audit detail only)",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_revoked"
       },
@@ -2004,7 +2000,6 @@
     {
       "id": "service-key-expired",
       "desc": "expired: uniform key_not_found",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_expired"
       },
@@ -2019,7 +2014,6 @@
     {
       "id": "service-key-unknown",
       "desc": "unknown: uniform key_not_found",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_unknown"
       },
@@ -2034,7 +2028,6 @@
     {
       "id": "service-key-tenant-denied",
       "desc": "a service principal is denied every tenant-scoped permission; the offline path must answer exactly as the platform does",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_active"
       },
@@ -2051,7 +2044,6 @@
     {
       "id": "service-key-approver-denied",
       "desc": "never an approver permission either",
-      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
       "who": {
         "key": "svc_image_active"
       },
@@ -2216,5 +2208,610 @@
         "source": "live"
       }
     }
-  ]
+  ],
+  "extraction": {
+    "": "extract(headers) -> {type, key_kind?}. Header names are lower-case; a LIST value is a header sent more than once (Node/Express and Fetch Headers join repeats with ', '; Starlette keeps them as a list). Raw credential values are never asserted.",
+    "cases": [
+      {
+        "id": "no-credential",
+        "desc": "nothing at all",
+        "headers": {},
+        "expect": {
+          "type": "none"
+        }
+      },
+      {
+        "id": "agent-key-header",
+        "desc": "platform agent key in x-api-key",
+        "headers": {
+          "x-api-key": "stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": "agent"
+        }
+      },
+      {
+        "id": "guest-key-as-bearer",
+        "desc": "a platform key presented as a bearer is still a key",
+        "headers": {
+          "authorization": "Bearer stgg_gggggggggggggggggggggggggggggg"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": "guest"
+        }
+      },
+      {
+        "id": "mcp-key",
+        "desc": "legacy MCP key",
+        "headers": {
+          "x-api-key": "stig_mmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": "mcp"
+        }
+      },
+      {
+        "id": "service-key",
+        "desc": "inbound service key",
+        "headers": {
+          "x-api-key": "stgs_ssssssssssssssssssssssssssssss"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": "service"
+        }
+      },
+      {
+        "id": "key-too-short",
+        "desc": "right prefix, too short to be a key",
+        "headers": {
+          "x-api-key": "stga_short"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": null
+        }
+      },
+      {
+        "id": "legacy-shared-key-is-not-a-v2-credential",
+        "desc": "the v1 INTERNAL_API_KEY has no platform prefix",
+        "headers": {
+          "x-api-key": "legacy-shared-key-value"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": null
+        }
+      },
+      {
+        "id": "bearer-jwt",
+        "desc": "a session token",
+        "headers": {
+          "authorization": "Bearer aaaa.bbbb.cccc"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "bearer-junk-goes-to-clerk-validation",
+        "desc": "not a key, not a JWT: Clerk validation answers token_invalid",
+        "headers": {
+          "authorization": "Bearer not-a-key-and-not-a-jwt"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "bearer-case-and-spacing",
+        "desc": "scheme is case-insensitive, extra spaces tolerated",
+        "headers": {
+          "authorization": "bearer    aaaa.bbbb.cccc  "
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "basic-auth-is-no-credential",
+        "desc": "a scheme we do not use",
+        "headers": {
+          "authorization": "Basic dXNlcjpwYXNz"
+        },
+        "expect": {
+          "type": "none"
+        }
+      },
+      {
+        "id": "empty-bearer",
+        "desc": "nothing after the scheme",
+        "headers": {
+          "authorization": "Bearer "
+        },
+        "expect": {
+          "type": "none"
+        }
+      },
+      {
+        "id": "platform-key-header-beats-bearer",
+        "desc": "a platform key in x-api-key wins over a bearer",
+        "headers": {
+          "x-api-key": "stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "authorization": "Bearer aaaa.bbbb.cccc"
+        },
+        "expect": {
+          "type": "key",
+          "key_kind": "agent"
+        }
+      },
+      {
+        "id": "non-platform-api-key-does-not-beat-bearer",
+        "desc": "an x-api-key that is not a platform key does not shadow a bearer",
+        "headers": {
+          "x-api-key": "legacy-shared-key-value",
+          "authorization": "Bearer aaaa.bbbb.cccc"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "bearer-beats-cookie",
+        "desc": "header before cookie",
+        "headers": {
+          "authorization": "Bearer aaaa.bbbb.cccc",
+          "cookie": "__session=dddd.eeee.ffff"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "session-cookie",
+        "desc": "browser session",
+        "headers": {
+          "cookie": "__session=aaaa.bbbb.cccc"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "session-cookie-among-others",
+        "desc": "other cookies are ignored",
+        "headers": {
+          "cookie": "a=1; __session=aaaa.bbbb.cccc; b=2"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "session-cookie-percent-encoded",
+        "desc": "a valid percent escape is decoded",
+        "headers": {
+          "cookie": "__session=aaaa%2Ebbbb.cccc"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "session-cookie-malformed-percent",
+        "desc": "a malformed escape must never throw: the raw value goes to Clerk validation (token_invalid)",
+        "headers": {
+          "cookie": "__session=aaaa%E0%A4%A.bbbb.cccc"
+        },
+        "expect": {
+          "type": "clerk"
+        }
+      },
+      {
+        "id": "session-cookie-twice",
+        "desc": "the same cookie twice is ambiguous",
+        "headers": {
+          "cookie": "__session=aaaa.bbbb.cccc; __session=dddd.eeee.ffff"
+        },
+        "expect": {
+          "type": "invalid"
+        }
+      },
+      {
+        "id": "api-key-header-twice",
+        "desc": "x-api-key sent twice (joined or listed)",
+        "headers": {
+          "x-api-key": [
+            "stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ]
+        },
+        "expect": {
+          "type": "invalid"
+        }
+      },
+      {
+        "id": "authorization-header-twice",
+        "desc": "authorization sent twice",
+        "headers": {
+          "authorization": [
+            "Bearer aaaa.bbbb.cccc",
+            "Bearer aaaa.bbbb.cccc"
+          ]
+        },
+        "expect": {
+          "type": "invalid"
+        }
+      },
+      {
+        "id": "api-key-with-comma",
+        "desc": "a comma means more than one value: no key contains one",
+        "headers": {
+          "x-api-key": "stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, stga_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expect": {
+          "type": "invalid"
+        }
+      },
+      {
+        "id": "audience-token",
+        "desc": "a JWT issued by the platform itself is re-checked live, never trusted offline",
+        "headers": {
+          "authorization": "Bearer eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJzdGlnaGl2ZS1wbGF0Zm9ybSJ9.c2ln"
+        },
+        "expect": {
+          "type": "audience"
+        }
+      }
+    ]
+  },
+  "route_policy": {
+    "": "routeAllowed(routes, method, path): the app's own policy, matched on the path AS SENT (undecoded, no query string). * is one path segment, ** is many. Any path that could be read two ways ('%', '..', '//', control characters, not starting with '/') is refused.",
+    "cases": [
+      {
+        "id": "exact",
+        "desc": "literal match",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "POST",
+        "path": "/internal/render",
+        "allow": true
+      },
+      {
+        "id": "method-case-insensitive",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "get",
+        "path": "/internal/status/42",
+        "allow": true
+      },
+      {
+        "id": "wrong-method",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/render",
+        "allow": false
+      },
+      {
+        "id": "star-is-one-segment",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/42",
+        "allow": true
+      },
+      {
+        "id": "star-does-not-cross-slash",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/42/extra",
+        "allow": false
+      },
+      {
+        "id": "star-matches-empty-segment",
+        "desc": "a trailing slash after the star is its own thing: the star may be empty",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/",
+        "allow": true
+      },
+      {
+        "id": "double-star-crosses-segments",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "PATCH",
+        "path": "/internal/events/a/b/c",
+        "allow": true
+      },
+      {
+        "id": "star-inside-path",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "DELETE",
+        "path": "/internal/jobs/9/cancel",
+        "allow": true
+      },
+      {
+        "id": "star-inside-path-wrong-depth",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "DELETE",
+        "path": "/internal/jobs/9/x/cancel",
+        "allow": false
+      },
+      {
+        "id": "query-string-is-not-path",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/42?x=1&y=/../",
+        "allow": true
+      },
+      {
+        "id": "no-trailing-slash-guessing",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "POST",
+        "path": "/internal/render/",
+        "allow": false
+      },
+      {
+        "id": "no-prefix-matching",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "POST",
+        "path": "/internal/render/extra",
+        "allow": false
+      },
+      {
+        "id": "dotdot-segment",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/../admin",
+        "allow": false
+      },
+      {
+        "id": "dotdot-encoded-slash",
+        "desc": "the classic",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/..%2fadmin",
+        "allow": false
+      },
+      {
+        "id": "encoded-dots",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/%2e%2e/x",
+        "allow": false
+      },
+      {
+        "id": "encoded-slash-in-segment",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/a%2fb",
+        "allow": false
+      },
+      {
+        "id": "percent-anything",
+        "desc": "any % at all is refused",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/50%",
+        "allow": false
+      },
+      {
+        "id": "double-slash",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal//status/1",
+        "allow": false
+      },
+      {
+        "id": "dots-inside-a-name",
+        "desc": "'..' anywhere is refused, even in a file-like name",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/a..b",
+        "allow": false
+      },
+      {
+        "id": "single-dot-name-is-fine",
+        "desc": "a single dot is an ordinary character",
+        "routes": [
+          "GET /internal/*"
+        ],
+        "method": "GET",
+        "path": "/internal/file.txt",
+        "allow": true
+      },
+      {
+        "id": "no-leading-slash",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "internal/status/1",
+        "allow": false
+      },
+      {
+        "id": "empty-path",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "",
+        "allow": false
+      },
+      {
+        "id": "control-character",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/1\n",
+        "allow": false
+      },
+      {
+        "id": "nul-byte",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "DELETE /internal/jobs/*/cancel"
+        ],
+        "method": "GET",
+        "path": "/internal/status/1\u0000",
+        "allow": false
+      },
+      {
+        "id": "no-routes",
+        "desc": "deny by default",
+        "routes": [],
+        "method": "GET",
+        "path": "/internal/status/1",
+        "allow": false
+      },
+      {
+        "id": "glob-chars-other-than-star-are-literal",
+        "desc": "",
+        "routes": [
+          "GET /a.b"
+        ],
+        "method": "GET",
+        "path": "/aXb",
+        "allow": false
+      },
+      {
+        "id": "wildcard-method",
+        "desc": "",
+        "routes": [
+          "* /internal/ping"
+        ],
+        "method": "DELETE",
+        "path": "/internal/ping",
+        "allow": true
+      }
+    ]
+  }
 }

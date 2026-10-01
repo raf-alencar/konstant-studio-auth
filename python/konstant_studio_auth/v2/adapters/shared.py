@@ -25,23 +25,40 @@ async def resolve_scope(scope, *args):
     return out
 
 
+MESSAGES = {
+    "step_up_required": (
+        "This action needs a fresh second-factor verification, and the session token does not carry one that is recent enough "
+        "(multi-factor sign-in must be enabled for the account and the session token must include the fva claim). "
+        "Sign in again with your second factor. Until the fva claim is confirmed for this deployment this action is denied."
+    ),
+}
+
+
 def denial_body(status, reason, cfg):
     error = "No access to this service" if reason == "not_entitled" else BODIES.get(status, "Forbidden")
     body = {"error": error, "reason": reason}
+    if reason in MESSAGES:
+        body["message"] = MESSAGES[reason]
     if reason == "not_entitled":
         body["upgrade_url"] = cfg.upgrade_url
     return body
 
 
 def legacy_auth(principal, decision):
-    """The shape existing adopters read from request.state.auth (see README "What you get"),
-    so v2 dependencies can sit behind code written for v1. Authority is never derived from
-    it: is_superadmin is always False here, because in v2 only the permission matrix grants anything."""
+    """The shape existing adopters read from request.state.auth, so v2 dependencies can sit behind code
+    written for v1. Authority is never derived from it: is_superadmin is always False here, because in v2
+    only the permission matrix grants anything.
+
+    `org_id` / `org_role` are deliberately GONE. In v1 the Clerk org WAS the scoping key; in v2 the request
+    may be about a different tenant than the token's org (a route's tenant, an agency view), and a handler
+    that authorises on the decision but scopes its data by the token's org would mix tenants. The ONLY
+    scoping key is `tenant_id` (= decision.tenant_id). The token's Clerk org is kept as `clerk_org_id` /
+    `clerk_org_role` for display and logs; never scope data by it."""
     claims = principal.claims or {}
     return {
         "user_id": f"service:{principal.service}" if principal.kind == "service" else principal.user_id or principal.id or None,
-        "org_id": claims.get("org_id"),
-        "org_role": claims.get("org_role"),
+        "clerk_org_id": claims.get("org_id"),
+        "clerk_org_role": claims.get("org_role"),
         "is_superadmin": False,
         "tenant_id": decision.tenant_id,
     }

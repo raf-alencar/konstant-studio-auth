@@ -201,6 +201,15 @@ class FakePlatform {
     this.calls.push({ method, path: u.pathname });
     if (this.down) throw new TypeError('fetch failed');
     const body = init.body ? JSON.parse(init.body) : {};
+    // Test controls: a platform that throttles, holds a resolution open, or answers malformed.
+    if (u.pathname === '/v1/principals/resolve') {
+      if (this.throttleResolve) return new Response(null, { status: 429, headers: { 'retry-after': String(this.throttleResolve) } });
+      if (this.gate) await this.gate;
+    }
+    if (this.override) {
+      const r = this.override(u.pathname, body);
+      if (r) return r instanceof Response ? r : this._json(r);
+    }
 
     if (method === 'GET' && u.pathname === '/v1/authorize/snapshot') {
       const snap = this.world.snapshot(u.searchParams.get('service'), { version: this.snapshotVersion });

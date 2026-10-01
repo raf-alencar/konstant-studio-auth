@@ -17,6 +17,17 @@ from ..service_keys import validate_policy
 from .shared import clean_run_id, denial_body, legacy_auth, resolve_scope
 
 
+def _raw_path(request):
+    """ASGI's `raw_path` is the request target as sent (percent-escapes intact); `url.path` is decoded.
+    Policy matching must see the former. Falls back to the decoded path (which the policy then refuses
+    if it contains anything ambiguous)."""
+    raw = request.scope.get("raw_path")
+    if raw is not None:
+        raw = raw.decode("latin-1") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        return raw.split("?", 1)[0].split("#", 1)[0]
+    return request.url.path
+
+
 def fastapi_adapter(core):
     cfg = core.config
 
@@ -31,15 +42,15 @@ def fastapi_adapter(core):
     async def run(request, permission, scope, approver=False, step_up=False):
         try:
             resource = await resolve_scope(scope, request)
-            # An explicit tenant scope always wins; the header is only a hint when none was given.
-            if not resource.get("tenant") and request.headers.get("x-tenant"):
-                resource["tenant"] = request.headers["x-tenant"]
+            # The x-tenant header is only a HINT, the weakest source of the tenant (see Auth._select_tenant).
+            if request.headers.get("x-tenant"):
+                resource["tenant_hint"] = request.headers["x-tenant"]
             request_id = clean_run_id(request.headers.get("x-run-id"))
             args = dict(headers=request.headers, permission=permission, resource=resource, request=request, request_id=request_id)
             d = await core.authorize_approver(step_up=step_up, **args) if approver else await core.authorize(**args)
         except HTTPException:
             raise
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - a scope callable that raises must never surface as anything but a 503
             cfg.logger.error(f"auth dependency: unexpected {type(err).__name__}")
             raise fail(503, "platform_unavailable") from None
         if not d.allow:
@@ -73,7 +84,8 @@ def fastapi_adapter(core):
 
         async def dependency(request: Request):
             try:
-                d = await core.authorize_service_caller(headers=request.headers, method=request.method, path=request.url.path, policy=policy)
+                # The path as SENT (undecoded, unnormalised, including any mount prefix), without the query string.
+                d = await core.authorize_service_caller(headers=request.headers, method=request.method, path=_raw_path(request), policy=policy)
             except Exception as err:  # noqa: BLE001
                 cfg.logger.error(f"auth dependency: unexpected {type(err).__name__}")
                 raise fail(503, "platform_unavailable") from None

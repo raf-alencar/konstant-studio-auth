@@ -105,10 +105,14 @@ def _deny(reason, tenant_id=None, sensitive=False):
 
 
 def decide_offline(snapshot, principal, service, action, resource, now_ms):
-    """`principal` is anything with .user_id and .kind (default 'human')."""
+    """`principal` is anything with .user_id and .kind (no default: only 'human' is decided here)."""
     user_id = principal.user_id
-    kind = principal.kind or "human"
+    kind = principal.kind
 
+    # Only a human's membership is in a snapshot to be read; any other kind (including "unknown", None) is
+    # decided by the platform. Refuse rather than let a None kind match nothing by accident.
+    if kind != "human":
+        return _deny("principal_kind_restricted")
     perm = next((p for p in snapshot["permissions"] if p["action"] == action), None)
     if snapshot["service"] != service or not perm:
         return _deny("unknown_permission")

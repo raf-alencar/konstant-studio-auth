@@ -15,37 +15,71 @@ MIN_KEY_LENGTH = 20  # the platform treats shorter strings as not a key
 PLATFORM_ISS = "stighive-platform"
 
 
-def header(headers, name):
-    """Case-insensitive lookup in a Starlette/httpx Headers or a plain dict."""
+def header_values(headers, name):
+    """Every value sent for a header, case-insensitively: Starlette/httpx Headers keep repeats
+    (getlist/get_list), a plain dict may hold a list, or a ", "-joined string."""
     if not headers:
-        return None
+        return []
     lname = name.lower()
-    v = None
-    try:
-        v = headers.get(name)
-        if v is None:
-            v = headers.get(lname)
-    except Exception:  # noqa: BLE001
+    vals = None
+    for getter in ("getlist", "get_list"):
+        fn = getattr(headers, getter, None)
+        if fn is not None:
+            try:
+                vals = list(fn(name))
+            except Exception:  # noqa: BLE001
+                vals = None
+            break
+    if vals is None:
         v = None
-    if v is None and hasattr(headers, "items"):
-        for k, val in headers.items():
-            if str(k).lower() == lname:
-                v = val
-                break
-    if isinstance(v, (list, tuple)):
-        v = v[0] if v else None
-    return v
+        try:
+            v = headers.get(name)
+            if v is None:
+                v = headers.get(lname)
+        except Exception:  # noqa: BLE001
+            v = None
+        if v is None and hasattr(headers, "items"):
+            for k, val in headers.items():
+                if str(k).lower() == lname:
+                    v = val
+                    break
+        vals = [] if v is None else list(v) if isinstance(v, (list, tuple)) else [v]
+    return [x for x in vals if x is not None]
+
+
+def header(headers, name):
+    vals = header_values(headers, name)
+    return vals[0] if vals else None
+
+
+def _cookie_header(headers):
+    vals = header_values(headers, "cookie")
+    return "; ".join(vals) if vals else None
 
 
 def cookie(headers, name):
-    raw = header(headers, "cookie")
+    """-> the cookie's value, None if absent, or INVALID if it is present MORE THAN ONCE (ambiguous).
+    A malformed percent-escape never raises: the raw value is used, and Clerk validation then
+    answers token_invalid (a session JWT contains no % at all)."""
+    raw = _cookie_header(headers)
     if not raw:
         return None
+    found = []
     for part in raw.split(";"):
         i = part.find("=")
         if i > 0 and part[:i].strip() == name:
-            return unquote(part[i + 1:].strip())
-    return None
+            found.append(part[i + 1:].strip())
+    if not found:
+        return None
+    if len(found) > 1:
+        return INVALID
+    try:
+        return unquote(found[0], errors="strict")
+    except Exception:  # noqa: BLE001
+        return found[0]
+
+
+INVALID = object()
 
 
 def key_kind_of(raw):
@@ -68,7 +102,7 @@ def is_audience_token(raw):
 
 
 class Credential:
-    """type: 'key' | 'clerk' | 'audience' | 'none'."""
+    """type: 'key' | 'clerk' | 'audience' | 'none' | 'invalid'."""
 
     def __init__(self, type, raw=None, key_kind=None):
         self.type = type
@@ -89,17 +123,30 @@ def classify(raw):
 
 
 def extract(headers):
-    api_key = header(headers, "x-api-key")
-    auth = header(headers, "authorization")
-    bearer = re.sub(r"^bearer\s+", "", auth, flags=re.I).strip() if auth and re.match(r"bearer\s+", auth, re.I) else None
+    """-> Credential. type 'invalid' means the request carried an AMBIGUOUS credential: the same header
+    (or cookie) more than once. Repeated header values arrive as a list (Starlette) or joined with ", ",
+    and no key or JWT contains a comma, so a comma means "more than one value". Which of two credentials
+    the sender meant is not a question to guess at: it is refused (token_invalid), whatever each would have
+    resolved to."""
+    api_keys = header_values(headers, "x-api-key")
+    auths = header_values(headers, "authorization")
+    if len(api_keys) > 1 or len(auths) > 1:
+        return Credential("invalid")
+    api_key = api_keys[0] if api_keys else None
+    auth = auths[0] if auths else None
+    if (api_key and "," in api_key) or (auth and "," in auth):
+        return Credential("invalid")
+    session = cookie(headers, "__session")
+    if session is INVALID:
+        return Credential("invalid")
 
+    bearer = re.sub(r"^bearer\s+", "", auth, flags=re.I).strip() if auth and re.match(r"bearer\s+", auth, re.I) else None
     if api_key and key_kind_of(api_key):
         return classify(api_key)
     if bearer:
         return classify(bearer)
     if api_key:
         return Credential("key", api_key, None)  # not a platform key: key_not_found, not a guess
-    session = cookie(headers, "__session")
     if session:
         return classify(session)
     return Credential("none")

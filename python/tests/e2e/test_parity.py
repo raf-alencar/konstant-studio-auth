@@ -73,6 +73,32 @@ def test_fixture_world_builds_the_snapshot_the_platform_serves(ctx):
     assert r == b
 
 
+async def _resolve_only(c, ctx):
+    """Identity only (inbound service keys): the library's answer, and what the platform says to each
+    expect_service we would send."""
+    exp = c["expect"]
+    auth = library_for(ctx, accepted_caller_services=VECTORS["config"]["accepted_caller_services"])
+    try:
+        lib = await auth.resolve_principal(headers={"x-api-key": ctx.state["keys"][c["who"]["key"]]})
+    finally:
+        await auth.close()
+    asked = []
+    for service in VECTORS["config"]["accepted_caller_services"]:
+        r = httpx.post(f"{ctx.state['platform_url']}/v1/principals/resolve", headers={"X-API-Key": ctx.state["shared_key"]},
+                       json={"credential": ctx.state["keys"][c["who"]["key"]], "expect_service": service}, timeout=10)
+        asked.append((service, r.json()))
+    matches = [sv for sv, b in asked if b.get("valid") is True]
+    if exp["allow"]:
+        assert matches == [exp["principal"]["service"]], "the platform matches exactly the key's own service"
+        assert lib["ok"] is True
+        p = lib["principal"]
+        assert (p.kind, p.service, p.tenant) == (exp["principal"]["kind"], exp["principal"]["service"], exp["principal"]["tenant"])
+    else:
+        assert matches == []
+        assert all(b.get("valid") is False and b.get("reason") == "key_not_found" for _, b in asked), "the fixed platform answers every failure with the same uniform reason"
+        assert (lib["ok"], lib["reason"], lib["status"]) == (False, exp["reason"], exp["status"])
+
+
 def _credential(ctx, c):
     who = c["who"]
     if who.get("clerk"):
@@ -107,6 +133,8 @@ def _truth_body(c, resource, headers):
 @pytest.mark.parametrize("c", _cases())
 async def test_library_equals_platform(c, ctx):
     exp = c["expect"]
+    if c.get("resolve_only"):
+        return await _resolve_only(c, ctx)
     headers = _credential(ctx, c)
     resource = _resource(ctx, c)
     # The platform has no tenant resolver: the tenant an adopter's resolver would supply is stated explicitly.
@@ -119,7 +147,7 @@ async def test_library_equals_platform(c, ctx):
     assert truth["allow"] == exp["allow"]
 
     tid = ctx.world.id("tenant", rt) if rt else None
-    auth = library_for(ctx, tenant_resolver=(lambda req, p: tid) if rt else None)
+    auth = library_for(ctx, tenant_resolver=(lambda req, p: tid) if rt else None, accepted_caller_services=VECTORS["config"]["accepted_caller_services"])
     try:
         lib = await auth.authorize(headers=headers, permission=c["ask"]["permission"], resource=resource)
     finally:
@@ -128,7 +156,7 @@ async def test_library_equals_platform(c, ctx):
     assert lib.allow == truth["allow"], f"library said {lib.reason}, platform said {truth['reason']}"
     expected_reason = COARSE_OFFLINE.get(truth["reason"], truth["reason"]) if lib.source == "offline" else truth["reason"]
     assert lib.reason == expected_reason
-    assert lib.source == exp["source"]
+    assert lib.source == exp.get("source", "none")
     if truth["allow"]:
         assert lib.tenant_id == truth["tenant_id"]
         assert lib.via_tenant == truth["via_tenant"]
