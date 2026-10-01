@@ -12,7 +12,7 @@
 // req.auth. On failure: 401 (credential), 403 (decision), 503 (could not decide).
 
 const { resolveScope, denialBody, legacyAuth, cleanRunId } = require('./shared');
-const { routeAllowed } = require('../service-keys');
+const { validatePolicy } = require('../service-keys');
 
 function expressAdapter(core) {
   const cfg = core.config;
@@ -50,15 +50,19 @@ function expressAdapter(core) {
       const { permission, stepUp = false, ...scope } = opts;
       return (req, res, next) => run(req, res, next, permission, scope, { approver: true, stepUp });
     },
-    // A SERVICE principal may call only the routes in its allow-list; every other
-    // principal kind passes through (their gate is requirePermission).
-    requireServiceRoute: () => async (req, res, next) => {
-      const r = await core.resolvePrincipal({ headers: req.headers });
-      if (!r.ok) return send(res, { status: r.status, reason: r.reason });
-      if (r.principal.kind === 'service' && !routeAllowed(r.principal.routes, req.method, req.path)) {
-        return send(res, { status: 403, reason: 'route_not_allowed' });
-      }
-      return next();
+    // Inbound calls from other internal services (stgs_ keys). `policy` is THIS app's own rule for
+    // each accepted caller service: { image: ['POST /internal/render', 'GET /internal/status/*'] }.
+    // Deny by default; the platform's allowed_routes for the key are not consulted.
+    requireServiceCaller: (policy) => {
+      validatePolicy(policy, cfg.acceptedCallerServices);
+      return async (req, res, next) => {
+        const d = await core.authorizeServiceCaller({ headers: req.headers, method: req.method, path: req.path, policy });
+        if (!d.allow) return send(res, d);
+        req.principal = d.principal;
+        req.authDecision = d;
+        req.auth = legacyAuth(d.principal, d);
+        return next();
+      };
     },
     assertTenant: (req, tenantId) => core.assertTenant(req.authDecision, tenantId),
     usageContext: (req) => core.usageContext(req.authDecision, cleanRunId(req.headers['x-run-id'])),

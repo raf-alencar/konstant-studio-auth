@@ -33,6 +33,7 @@ class Harness:
         self.fake = FakePlatform(world, keys, JWKS_URL)
         opts = dict(
             service=CFG["service"],
+            accepted_caller_services=CFG["accepted_caller_services"],
             platform_url="http://platform.vectors.test",
             platform_key="stgs_fake-service-key-for-tests",
             clerk={"issuer": CFG["clerk"]["issuer"], "jwks_url": JWKS_URL, "authorized_parties": CFG["clerk"]["authorized_parties"]},

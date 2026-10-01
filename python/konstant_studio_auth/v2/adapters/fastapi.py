@@ -13,7 +13,7 @@ v1-shaped request.state.auth. On failure: 401 (credential), 403 (decision), 503 
 
 from fastapi import HTTPException, Request
 
-from ..service_keys import route_allowed
+from ..service_keys import validate_policy
 from .shared import clean_run_id, denial_body, legacy_auth, resolve_scope
 
 
@@ -65,18 +65,24 @@ def fastapi_adapter(core):
 
         return dependency
 
-    def require_service_route():
-        """A SERVICE principal may call only the routes in its allow-list; every other
-        principal kind passes through (their gate is require_permission)."""
+    def require_service_caller(policy):
+        """Inbound calls from other internal services (stgs_ keys). `policy` is THIS app's own rule for
+        each accepted caller service: {"image": ["POST /internal/render", "GET /internal/status/*"]}.
+        Deny by default; the platform's allowed_routes for the key are not consulted."""
+        validate_policy(policy, cfg.accepted_caller_services)
 
         async def dependency(request: Request):
-            r = await core.resolve_principal(headers=request.headers)
-            if not r["ok"]:
-                raise fail(r["status"], r["reason"])
-            p = r["principal"]
-            if p.kind == "service" and not route_allowed(p.routes, request.method, request.url.path):
-                raise fail(403, "route_not_allowed")
-            return p
+            try:
+                d = await core.authorize_service_caller(headers=request.headers, method=request.method, path=request.url.path, policy=policy)
+            except Exception as err:  # noqa: BLE001
+                cfg.logger.error(f"auth dependency: unexpected {type(err).__name__}")
+                raise fail(503, "platform_unavailable") from None
+            if not d.allow:
+                raise fail(d.status, d.reason)
+            request.state.principal = d.principal
+            request.state.auth_decision = d
+            request.state.auth = legacy_auth(d.principal, d)
+            return d
 
         return dependency
 
@@ -111,7 +117,7 @@ def fastapi_adapter(core):
     a = _Adapter()
     a.require_permission = require_permission
     a.require_approver = require_approver
-    a.require_service_route = require_service_route
+    a.require_service_caller = require_service_caller
     a.events_webhook = events_webhook
     a.assert_tenant = lambda request, tenant_id: core.assert_tenant(getattr(request.state, "auth_decision", None), tenant_id)
     a.usage_context = lambda request: core.usage_context(getattr(request.state, "auth_decision", None), clean_run_id(request.headers.get("x-run-id")))

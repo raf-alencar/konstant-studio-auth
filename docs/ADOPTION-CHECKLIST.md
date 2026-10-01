@@ -7,6 +7,7 @@ One list, reused by every adopting CR. Copy it into the CR's hand-off and tick e
 - [ ] The service has a **catalog slug** in the platform (`docs`, `video`, `crm`, `jobs`, `mail`, ...) and its permissions are defined there. The platform owns the vocabulary; ask for missing actions, do not invent them.
 - [ ] A **per-service key** (`stgs_...`) exists for this service: bound to its catalog slug, with an allow-list of only `GET /v1/authorize/snapshot`, `GET /v1/events`, `POST /v1/authorize`, `POST /v1/principals/resolve`. Never `* /*`. It lives in the service's secret store as `PLATFORM_SERVICE_KEY`, never in code, a doc, a graph note or a log.
 - [ ] `PLATFORM_API_URL` is reachable from the service (the platform is tailnet-only).
+- [ ] Your own key is **bound to your catalog service** (the platform refuses a slug-less caller). If other services call you: `acceptedCallerServices` lists exactly the callers you trust, and each has a `stgs_` key bound to *its* service.
 - [ ] Clerk values are set: `CLERK_ISSUER`, `CLERK_JWKS_URL`, **`CLERK_AUTHORIZED_PARTIES`** (the frontend origins; the library refuses to start without it).
 - [ ] Pin a **tag** of `@konstant-studio/auth` / `konstant-studio-auth`, not `main`.
 
@@ -23,6 +24,8 @@ One list, reused by every adopting CR. Copy it into the CR's hand-off and tick e
 - [ ] No local role, user, key or entitlement table is consulted for authorization. Existing ones are listed for removal in a follow-up (design rule: no service keeps its own).
 - [ ] `onEvent` is wired to the audit/usage emitter. `usageContext(req)` supplies the actor to usage events. Confirm in a log sample that no token, key or `Authorization` header appears.
 
+- [ ] Inbound service callers (if any): `requireServiceCaller(policy)` / `withServiceCaller` / `require_service_caller` gate every internal route, with **your own** route policy per accepted caller (deny by default; never `* /*`). The platform's `allowed_routes` for the key are not your policy.
+
 ## 3. Prove it (against a local copy of the platform, never the real one)
 
 Use the scratch harness in this repo (`scripts/scratch_platform.py`), which refuses any database that is not local and named `cptest*`, and the sample-app tests (`test/e2e/adapters.test.js`, `python/tests/e2e/`) as the template. For **your** routes, show:
@@ -34,6 +37,8 @@ Use the scratch harness in this repo (`scripts/scratch_platform.py`), which refu
 - [ ] scope: a request outside the membership's brand/domain/mailbox -> `403` `out_of_scope`; one that omits a restricted dimension -> `scope_required`.
 - [ ] a **sensitive** action is decided live (the platform's audit log shows the check).
 - [ ] an **agent key** works for what its role allows and is refused an approver action (`principal_kind_restricted`); a **revoked key** is refused on the next request.
+- [ ] inbound service callers: an accepted caller on a policy route -> `200`; the same caller on another route -> `403 route_not_allowed`; an accepted-but-unlisted caller -> `403`; an unknown, revoked, expired or unaccepted key -> the **same** `401 key_not_found`; a service key on a `requirePermission` route -> `403 service_principal_not_granted`.
+- [ ] tenant from the Clerk org: a session whose org maps to a tenant the user belongs to -> `200` with no `x-tenant`; an org the user does not belong to -> `403`, not a different tenant.
 - [ ] the platform **unreachable**: sensitive routes and key checks answer `503` (never an allow); read routes keep working only from a cache no older than `SNAPSHOT_STALE_READ_TTL_SECONDS`.
 - [ ] revoking a membership in the platform takes effect within the poll interval (`AUTH_EVENT_POLL_SECONDS`, default 5s).
 - [ ] the shared vectors (`test-vectors/vectors.json`) are unchanged in your checkout: do not edit them to make a repo pass; a needed change goes back to this repo as a CR.

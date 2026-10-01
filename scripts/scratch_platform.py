@@ -95,9 +95,17 @@ async def seed(conn, raw_keys: dict) -> None:
 
     # `transient` rows only exist for in-memory clock tests (they expire within seconds): never seeded.
     live = lambda rows: [r for r in rows if not r.get("transient")]
+    # Clerk organizations first, with the org -> tenant sync trigger off: it would otherwise create a
+    # second, unrelated tenant for each. The tenants below then point at them through org_id.
+    orgs = sorted({t["org_id"] for t in live(WORLD["tenants"]) if t.get("org_id")})
+    if orgs:
+        await q("ALTER TABLE stighive_platform.organizations DISABLE TRIGGER trg_org_sync")
+        for org in orgs:
+            await q("INSERT INTO stighive_platform.organizations (id, slug, name) VALUES ($1,$2,$2)", org, org.replace("_", "-"))
+        await q("ALTER TABLE stighive_platform.organizations ENABLE TRIGGER trg_org_sync")
     for t in live(WORLD["tenants"]):  # parents are listed before children
-        await q("INSERT INTO stighive_platform.tenants (id, slug, name, type, parent_id, status) VALUES ($1,$2,$3,$4,$5,$6)",
-                uid("tenant", t["ref"]), t["ref"].replace("_", "-"), t["ref"], t["type"], uid("tenant", t["parent"]), t["status"])
+        await q("INSERT INTO stighive_platform.tenants (id, slug, name, type, parent_id, status, org_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                uid("tenant", t["ref"]), t["ref"].replace("_", "-"), t["ref"], t["type"], uid("tenant", t["parent"]), t["status"], t.get("org_id"))
     for e in live(WORLD["entitlements"]):
         await q("INSERT INTO stighive_platform.tenant_entitlements (tenant_id, service, state, plan, starts_at, ends_at) "
                 "VALUES ($1,$2,$3,$4, CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(secs => $5::int) END, "

@@ -85,32 +85,7 @@ def test_route_allowed():
 # ---- service keys --------------------------------------------------------------
 
 
-async def test_service_key_stub_is_unsupported_and_never_calls_the_platform(make_harness):
-    h = make_harness()
-    key = "stgs_" + hashlib.sha256(b"fake").hexdigest()
-    d = await h.auth.authorize(headers={"x-api-key": key}, permission="docs:read", resource={"tenant": "t"})
-    assert (d.allow, d.reason, d.status, d.source) == (False, "unsupported_credential", 401, "none")
-    assert h.fake.calls == []
-    r = await h.auth.resolve_principal(headers={"authorization": f"Bearer {key}"})
-    assert r == {"ok": False, "reason": "unsupported_credential", "status": 401}
-    assert h.fake.calls == []
-
-
-async def test_service_key_platform_mode_maps_the_amendment_shape(make_harness):
-    calls = []
-
-    def handler(request):
-        calls.append((request.method, request.url.path))
-        if request.url.path == "/v1/principals/resolve":
-            return httpx.Response(200, json={"valid": True, "key_id": "k1", "principal": {"kind": "service", "id": "p1", "service": "crm", "routes": ["GET /ok"]}})
-        return httpx.Response(200, json={"allow": False, "reason": "no_permission", "tenant_id": None})
-
-    h = make_harness(service_keys="platform", transport=httpx.MockTransport(handler))
-    key = "stgs_" + "a" * 40
-    r = await h.auth.resolve_principal(headers={"x-api-key": key})
-    assert r["ok"] and r["principal"].kind == "service" and r["principal"].routes == ["GET /ok"]
-    d = await h.auth.authorize(headers={"x-api-key": key}, permission="docs:read", resource={"tenant": "t"})
-    assert (d.allow, d.reason, d.status, d.source) == (False, "no_permission", 403, "live")
+# (service keys: see test_service_keys.py)
 
 
 # ---- snapshot cache ------------------------------------------------------------
@@ -331,7 +306,7 @@ async def test_audit_event_has_no_credential_material(make_harness, world, clerk
         assert s not in blob
     assert events[0]["type"] == "auth.decision" and events[0]["run_id"] == "r1" and events[0]["ts"].endswith("Z")
     assert events[1]["actor"]["key_prefix"] == "stga_"
-    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "actor", "key_id", "run_id"}
+    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "caller_service", "actor", "key_id", "run_id"}
 
 
 async def test_a_failing_event_sink_never_breaks_a_request(make_harness, world, clerk_keys):
@@ -367,7 +342,7 @@ def test_config_env_fallbacks():
     env = {
         "CLERK_ISSUER": "https://c.test/", "CLERK_AUTHORIZED_PARTIES": " https://a.test , https://b.test ", "CLERK_AUDIENCE": "aud1",
         "PLATFORM_API_URL": "https://p.test///", "INTERNAL_API_KEY": "old", "SNAPSHOT_TTL_SECONDS": "12", "SNAPSHOT_STALE_READ_TTL_SECONDS": "x",
-        "AUTH_EVENT_POLL_SECONDS": "7", "AUTH_STEP_UP_MAX_AGE_MINUTES": "3", "AUTH_SERVICE_KEYS": "platform", "AUTH_UPGRADE_URL": "https://u.test", "AUTH_SERVICE": "docs",
+        "AUTH_EVENT_POLL_SECONDS": "7", "AUTH_STEP_UP_MAX_AGE_MINUTES": "3", "AUTH_ACCEPTED_CALLER_SERVICES": "image, video", "AUTH_UPGRADE_URL": "https://u.test", "AUTH_SERVICE": "docs",
     }
     cfg = create_auth(env=env).config
     assert cfg.clerk.issuer == "https://c.test/" and cfg.clerk.jwks_url == "https://c.test/.well-known/jwks.json"
@@ -375,10 +350,15 @@ def test_config_env_fallbacks():
     assert cfg.platform_url == "https://p.test" and cfg.platform_key == "old"
     assert (cfg.snapshot.ttl_seconds, cfg.snapshot.stale_read_ttl_seconds) == (12, 300)
     assert (cfg.poll_interval_seconds, cfg.step_up_max_age_minutes) == (7, 3)
-    assert (cfg.service_keys, cfg.upgrade_url, cfg.service) == ("platform", "https://u.test", "docs")
+    assert (cfg.accepted_caller_services, cfg.upgrade_url, cfg.service) == (["image", "video"], "https://u.test", "docs")
+    assert (cfg.service_key_cache.valid_ttl_seconds, cfg.service_key_cache.invalid_ttl_seconds, cfg.service_key_cache.max_entries) == (60, 10, 1000)
     env["PLATFORM_SERVICE_KEY"] = "new"
     assert create_auth(env=env).config.platform_key == "new"  # per-service key beats the deprecated shared one
-    assert create_auth(env={}, clerk=None).config.service_keys == "stub"
+    assert create_auth(env={}, clerk=None).config.accepted_caller_services == []
+    with pytest.raises(ConfigError):
+        create_auth(accepted_caller_services=["Not A Slug"], env={})
+    with pytest.raises(ConfigError):
+        create_auth(service_keys="stub", env={})  # the old stub/platform switch is gone
 
 
 # ---- webhook signature ----------------------------------------------------------

@@ -45,10 +45,6 @@ def rig(ctx):
     async def assert_tenant(request: Request, claimed: str, d=Depends(auth.require_permission("docs:read", tenant=tenant_of))):
         return {"same": auth.fastapi.assert_tenant(request, claimed)}
 
-    @app.get("/svc", dependencies=[Depends(auth.require_service_route())])
-    async def svc():
-        return {"ok": True}
-
     with TestClient(app) as client:
         yield client
     # the app's own loop is gone by now; nothing else to close (no polling started)
@@ -125,11 +121,9 @@ def test_agent_keys_work_and_a_revoked_key_stops_at_once(rig, ctx):
     assert (r.status_code, reason_of(r)) == (401, "key_revoked")
 
 
-def test_service_key_is_refused_by_the_stub(rig, ctx):
-    r = rig.get("/docs", headers={"x-api-key": ctx.state["keys"]["svc_docs_active"]})
-    assert (r.status_code, reason_of(r)) == (401, "unsupported_credential")
-    r = rig.get("/svc", headers={"x-api-key": ctx.state["keys"]["svc_docs_active"]})
-    assert (r.status_code, reason_of(r)) == (401, "unsupported_credential")
+def test_this_app_accepts_no_caller_service_so_a_service_key_is_refused_uniformly(rig, ctx):
+    r = rig.get("/docs", headers={"x-api-key": ctx.state["keys"]["svc_image_active"]})
+    assert (r.status_code, reason_of(r)) == (401, "key_not_found")
 
 
 def test_assert_tenant_only_for_the_decision_tenant(rig, ctx):

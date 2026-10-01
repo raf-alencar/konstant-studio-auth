@@ -52,10 +52,6 @@ def rig(make_harness, world, clerk_keys):
     async def who(request: Request, d=Depends(auth.require_permission("docs:read", tenant=acme))):
         return {"principal": request.state.principal.id, "decision": request.state.auth_decision.reason, "legacy": request.state.auth}
 
-    @app.get("/svc", dependencies=[Depends(auth.require_service_route())])
-    async def svc():
-        return {"ok": True}
-
     @app.post("/hooks/platform")
     async def hook(request: Request):
         return await auth.events_webhook("whsec")(request)
@@ -159,36 +155,6 @@ def test_approver_step_up(rig, clerk_keys):
     assert rig.client.post("/approve", headers=tok(fva=[1, 2])).status_code == 200
     r = rig.client.post("/approve", headers=tok())
     assert r.status_code == 403 and r.json()["detail"]["reason"] == "step_up_required"
-
-
-def test_service_route_stub_and_passthrough(rig):
-    r = rig.client.get("/svc", headers={"X-API-Key": "stgs_" + "a" * 40})
-    assert r.status_code == 401 and r.json()["detail"]["reason"] == "unsupported_credential"
-    assert rig.client.get("/svc", headers=rig.bearer("alice")).status_code == 200  # humans pass; their gate is require_permission
-
-
-def test_service_route_allow_list_in_platform_mode(make_harness):
-    import httpx
-
-    def handler(request):
-        return httpx.Response(200, json={"valid": True, "principal": {"kind": "service", "id": "s", "service": "crm", "routes": ["GET /svc"]}})
-
-    h = make_harness(service_keys="platform", transport=httpx.MockTransport(handler))
-    app = FastAPI()
-
-    @app.get("/svc", dependencies=[Depends(h.auth.require_service_route())])
-    async def svc():
-        return 1
-
-    @app.post("/svc", dependencies=[Depends(h.auth.require_service_route())])
-    async def svc_post():
-        return 1
-
-    c = TestClient(app)
-    hdr = {"X-API-Key": "stgs_" + "a" * 40}
-    assert c.get("/svc", headers=hdr).status_code == 200
-    r = c.post("/svc", headers=hdr)
-    assert r.status_code == 403 and r.json()["detail"]["reason"] == "route_not_allowed"
 
 
 def test_events_webhook_endpoint(rig):

@@ -100,7 +100,7 @@ class World:
         ]
         tenants = [
             {
-                "id": self.id("tenant", t["ref"]), "slug": t["ref"], "type": t["type"],
+                "id": self.id("tenant", t["ref"]), "slug": t["ref"], "type": t["type"], "org_id": t.get("org_id"),
                 "parent_id": self.id("tenant", t["parent"]), "ancestors": [self.id("tenant", a) for a in ancestors(t["ref"])],
                 "plan": e.get("plan"), "limits": {}, "starts_at": iso(e.get("starts_in_s")), "ends_at": iso(e.get("ends_in_s")),
             }
@@ -209,6 +209,8 @@ class FakePlatform:
         self.calls = []
         self.snapshot_version = 100
         self.events = []
+        self.service_resolves = []  # expect_service of every stgs_ resolve, in order
+        self.service_key_expires_at = None
         self.transport = httpx.MockTransport(self.handle)
 
     def count(self, method, path):
@@ -216,7 +218,25 @@ class FakePlatform:
 
     def _principal_summary(self, p):
         return {"id": self.world.id("principal", p["ref"]), "kind": p["kind"],
-                "user_id": p["user_id"] if p["kind"] == "human" else None, "tenant_id": self.world.id("tenant", p.get("tenant"))}
+                "user_id": p["user_id"] if p["kind"] == "human" else None, "tenant_id": self.world.id("tenant", p.get("tenant")),
+                **({"service": p["service"]} if p["kind"] == "service" else {})}
+
+    def _resolve_service_key(self, key, body):
+        """POST /v1/principals/resolve for a stgs_ key, as the CoS contract note specifies the FINAL platform:
+        `expect_service` is mandatory for a bound caller (400 without), and an unknown, revoked, expired,
+        disabled or mismatching key all answer the same valid:false / key_not_found. The key's metadata is
+        returned only on a match. (The committed C0b2 differs: optional expect_service, specific reasons.
+        The library must be correct against both, so it always sends expect_service and never branches on the reason.)"""
+        self.service_resolves.append(body.get("expect_service"))
+        if not body.get("expect_service"):
+            return _json({"detail": "expect_service is required for a bound service key"}, 400)
+        p = self.world.principal(key["principal"]) if key and key["state"] == "active" and key["kind"] == "service" else None
+        if not p or p.get("service") != body["expect_service"]:
+            return _json({"valid": False, "reason": "key_not_found"})
+        return _json({
+            "valid": True, "key_id": self.world.id("key", key["ref"]), "principal": self._principal_summary(p),
+            "service_key": {"service": p["service"], "allowed_routes": key.get("routes") or [], "expires_at": self.service_key_expires_at, "status": "active"},
+        })
 
     async def handle(self, request):
         url = str(request.url)
@@ -246,17 +266,17 @@ class FakePlatform:
         if cred:
             key_problem = "key_not_found" if (not key or key["state"] == "unknown") else {"revoked": "key_revoked", "expired": "key_expired"}.get(key["state"])
         if u.path == "/v1/principals/resolve":
+            if cred and cred.startswith("stgs_"):
+                return self._resolve_service_key(key, body)
             if cred and key_problem:
                 return _json({"valid": False, "reason": key_problem})
-            if cred and key["kind"] == "service":
-                return _json({"valid": False, "reason": "unsupported_credential"})  # C0b: not resolvable
             return _json({"valid": True, "principal": self._principal_summary(w.principal(key["principal"])),
                           "key_id": w.id("key", key["ref"]) if key else None})
         if u.path == "/v1/authorize":
+            if cred and cred.startswith("stgs_"):
+                return _json({"allow": False, "reason": "service_principal_not_granted"})
             if cred and key_problem:
                 return _json({"allow": False, "reason": key_problem})
-            if cred and key["kind"] == "service":
-                return _json({"allow": False, "reason": "unsupported_credential"})
             e = self.live
             principal = self._principal_summary(w.principal(key["principal"])) if key else e.get("principal")
             return _json({

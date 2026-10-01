@@ -16,7 +16,7 @@ def create_auth(**opts):
     core.fastapi = fastapi_adapter(core)
     core.require_permission = core.fastapi.require_permission
     core.require_approver = core.fastapi.require_approver
-    core.require_service_route = core.fastapi.require_service_route
+    core.require_service_caller = core.fastapi.require_service_caller
     core.events_webhook = core.fastapi.events_webhook
     return core
 

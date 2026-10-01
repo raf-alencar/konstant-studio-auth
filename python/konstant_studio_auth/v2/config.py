@@ -32,11 +32,23 @@ def _first(*values):
     return None
 
 
+_KNOWN_OPTIONS = {
+    "service", "platform_url", "platform_key", "clerk", "snapshot", "poll_interval_seconds", "request_timeout_ms",
+    "step_up_max_age_minutes", "accepted_caller_services", "service_key_cache", "upgrade_url", "tenant_resolver",
+    "on_event", "now", "logger",
+}
+
+
 def resolve_config(opts=None, env=None):
     opts = opts or {}
+    # Unlike JS, a misspelled or removed option (e.g. the old `service_keys`) is an error, not silently ignored.
+    unknown = sorted(set(opts) - _KNOWN_OPTIONS)
+    if unknown:
+        raise ConfigError(f"unknown option(s): {', '.join(unknown)}")
     env = os.environ if env is None else env
     clerk_opts = opts.get("clerk") or {}
     snap_opts = opts.get("snapshot") or {}
+    sk = opts.get("service_key_cache") or {}
 
     issuer = _first(clerk_opts.get("issuer"), env.get("CLERK_ISSUER"), "")
     jwks_url = _first(
@@ -78,8 +90,14 @@ def resolve_config(opts=None, env=None):
         step_up_max_age_minutes=_first(
             opts.get("step_up_max_age_minutes"), _int(env.get("AUTH_STEP_UP_MAX_AGE_MINUTES"), 10)
         ),
-        # 'stub' until the platform's C0b2 resolves stgs_ keys; then 'platform'.
-        service_keys=_first(opts.get("service_keys"), env.get("AUTH_SERVICE_KEYS"), "stub"),
+        # Catalog services whose inbound service keys (stgs_) this app accepts. Explicit configuration,
+        # never "any": with none, every service key is refused (see service_keys.py).
+        accepted_caller_services=list(_first(opts.get("accepted_caller_services"), _csv(env.get("AUTH_ACCEPTED_CALLER_SERVICES")))),
+        service_key_cache=SimpleNamespace(
+            valid_ttl_seconds=_first(sk.get("valid_ttl_seconds"), 60),
+            invalid_ttl_seconds=_first(sk.get("invalid_ttl_seconds"), 10),
+            max_entries=_first(sk.get("max_entries"), 1000),
+        ),
         upgrade_url=_first(
             opts.get("upgrade_url"), env.get("AUTH_UPGRADE_URL"), "https://www.konstant-studio.com/dashboard"
         ),

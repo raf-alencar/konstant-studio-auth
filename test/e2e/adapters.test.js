@@ -107,9 +107,9 @@ test('adapters against the scratch platform', async (t) => {
     assert.deepEqual([r.status, (await r.json()).reason], [401, 'key_revoked']);
   });
 
-  await t.test('express: a service key is refused by the stub, without asking the platform to resolve it', async () => {
-    const r = await call('/docs', { headers: { 'x-api-key': ctx.state.keys.svc_docs_active } });
-    assert.deepEqual([r.status, (await r.json()).reason], [401, 'unsupported_credential']);
+  await t.test('express: this app accepts no caller service, so a service key is refused (uniform key_not_found) without asking the platform', async () => {
+    const r = await call('/docs', { headers: { 'x-api-key': ctx.state.keys.svc_image_active } });
+    assert.deepEqual([r.status, (await r.json()).reason], [401, 'key_not_found']);
   });
 
   await t.test('express: assertTenant is true only for the tenant the decision was made in', async () => {

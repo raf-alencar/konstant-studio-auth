@@ -14,7 +14,7 @@
     "docs/"
   ],
   "scripts": {
-    "test": "node --test test/vectors.test.js test/unit.test.js test/legacy.test.js",
+    "test": "node --test test/vectors.test.js test/unit.test.js test/service-keys.test.js test/effective.test.js test/legacy.test.js",
     "test:e2e": "node --test test/e2e/*.test.js",
     "test:smoke": "node --test test/pack-smoke.test.js"
   },

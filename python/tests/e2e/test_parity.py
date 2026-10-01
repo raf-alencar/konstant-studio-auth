@@ -45,7 +45,7 @@ def test_fixture_world_builds_the_snapshot_the_platform_serves(ctx):
         return {
             "permissions": sorted(s["permissions"], key=lambda p: p["action"]),
             "tenants": sorted(
-                [{"id": x["id"], "type": x["type"], "parent_id": x["parent_id"], "ancestors": x["ancestors"], "plan": x["plan"],
+                [{"id": x["id"], "type": x["type"], "org_id": x["org_id"], "parent_id": x["parent_id"], "ancestors": x["ancestors"], "plan": x["plan"],
                   "starts": _ms(x["starts_at"]), "ends": _ms(x["ends_at"])} for x in s["tenants"]], key=lambda x: x["id"]),
             "roles": sorted([{"slug": r["slug"], "tenant_id": r["tenant_id"], "permissions": r["permissions"]} for r in s["roles"]],
                             key=lambda r: r["slug"] + (r["tenant_id"] or "null")),
@@ -110,8 +110,10 @@ async def test_library_equals_platform(c, ctx):
     headers = _credential(ctx, c)
     resource = _resource(ctx, c)
     # The platform has no tenant resolver: the tenant an adopter's resolver would supply is stated explicitly.
+    # ...and the tenant an org claim maps to is stated explicitly too (vector field parity_tenant).
     rt = c["ask"].get("resolver_tenant")
-    asked = {**resource, "tenant": ctx.world.id("tenant", rt)} if rt else resource
+    named = rt or c.get("parity_tenant")
+    asked = {**resource, "tenant": ctx.world.id("tenant", named)} if named else resource
     _, truth = platform_authorize(ctx, _truth_body(c, asked, headers))
     assert truth["reason"] == exp["reason"], "the vector must state what the platform really answers"
     assert truth["allow"] == exp["allow"]

@@ -39,7 +39,7 @@ def legacy_auth(principal, decision):
     it: is_superadmin is always False here, because in v2 only the permission matrix grants anything."""
     claims = principal.claims or {}
     return {
-        "user_id": principal.user_id or principal.id or None,
+        "user_id": f"service:{principal.service}" if principal.kind == "service" else principal.user_id or principal.id or None,
         "org_id": claims.get("org_id"),
         "org_role": claims.get("org_role"),
         "is_superadmin": False,

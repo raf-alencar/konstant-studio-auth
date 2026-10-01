@@ -10,6 +10,7 @@
 // or server actions: it returns the decision and never throws.
 
 const { resolveScope, denialBody, legacyAuth, cleanRunId } = require('./shared');
+const { validatePolicy } = require('../service-keys');
 
 function nextAdapter(core) {
   const cfg = core.config;
@@ -45,9 +46,21 @@ function nextAdapter(core) {
     };
   }
 
+  // Inbound call from another internal service: `policy` is this app's own per-caller-service route rule.
+  function withServiceCaller(policy, handler) {
+    validatePolicy(policy, cfg.acceptedCallerServices);
+    return async (request, ctx) => {
+      const url = new URL(request.url);
+      const d = await core.authorizeServiceCaller({ headers: request.headers, method: request.method, path: url.pathname, policy });
+      if (!d.allow) return deny(d);
+      return handler(request, ctx, { principal: d.principal, decision: d, auth: legacyAuth(d.principal, d) });
+    };
+  }
+
   return {
     authorizeRequest,
     deny,
+    withServiceCaller,
     withPermission: (permission, scope, handler) => wrap(permission, scope, handler),
     withApprover: (permission, opts, handler) => {
       const { stepUp = false, ...scope } = opts;

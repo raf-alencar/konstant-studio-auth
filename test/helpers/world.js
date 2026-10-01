@@ -76,7 +76,7 @@ class World {
       .map((e) => ({ e, t: tenantById.get(e.tenant) }))
       .sort((a, b) => a.t.ref.localeCompare(b.t.ref))
       .map(({ e, t }) => ({
-        id: this.id('tenant', t.ref), slug: t.ref, type: t.type,
+        id: this.id('tenant', t.ref), slug: t.ref, type: t.type, org_id: t.org_id ?? null,
         parent_id: this.id('tenant', t.parent), ancestors: ancestors(t.ref).map((a) => this.id('tenant', a)),
         plan: e.plan ?? null, limits: {}, starts_at: iso(e.starts_in_s), ends_at: iso(e.ends_in_s),
       }));
@@ -170,7 +170,28 @@ class FakePlatform {
   }
 
   _principalSummary(p) {
-    return { id: this.world.id('principal', p.ref), kind: p.kind, user_id: p.kind === 'human' ? p.user_id : null, tenant_id: this.world.id('tenant', p.tenant) };
+    return {
+      id: this.world.id('principal', p.ref), kind: p.kind, user_id: p.kind === 'human' ? p.user_id : null,
+      tenant_id: this.world.id('tenant', p.tenant), ...(p.kind === 'service' ? { service: p.service } : {}),
+    };
+  }
+
+  // POST /v1/principals/resolve for a stgs_ key, as the CoS contract note specifies the FINAL platform:
+  // `expect_service` is mandatory for a bound caller (400 without), and an unknown, revoked, expired,
+  // disabled or mismatching key all answer the same valid:false / key_not_found. Return the key's
+  // metadata only on a match. (The committed C0b2 differs: optional expect_service, specific
+  // reasons. The library must be correct against both, so it always sends expect_service and never
+  // branches on the reason.)
+  _resolveServiceKey(cred, key, body) {
+    this.serviceResolves = this.serviceResolves || [];
+    this.serviceResolves.push(body.expect_service ?? null);
+    if (!body.expect_service) return this._json({ detail: 'expect_service is required for a bound service key' }, 400);
+    const p = key && key.state === 'active' && key.kind === 'service' ? this.world.principal(key.principal) : null;
+    if (!p || p.service !== body.expect_service) return this._json({ valid: false, reason: 'key_not_found' });
+    return this._json({
+      valid: true, key_id: this.world.id('key', key.ref), principal: this._principalSummary(p),
+      service_key: { service: p.service, allowed_routes: key.routes || [], expires_at: this.serviceKeyExpiresAt ?? null, status: 'active' },
+    });
   }
 
   async fetch(url, init = {}) {
@@ -195,13 +216,13 @@ class FakePlatform {
     const key = cred ? this.world.keyByRaw.get(cred) : null;
     const keyProblem = cred && (!key || key.state === 'unknown' ? 'key_not_found' : { revoked: 'key_revoked', expired: 'key_expired' }[key.state]);
     if (u.pathname === '/v1/principals/resolve') {
+      if (cred && cred.startsWith('stgs_')) return this._resolveServiceKey(cred, key, body);
       if (cred && keyProblem) return this._json({ valid: false, reason: keyProblem });
-      if (cred && key.kind === 'service') return this._json({ valid: false, reason: 'unsupported_credential' }); // C0b: not resolvable
       return this._json({ valid: true, principal: this._principalSummary(this.world.principal(key.principal)), key_id: key ? this.world.id('key', key.ref) : null });
     }
     if (u.pathname === '/v1/authorize') {
+      if (cred && cred.startsWith('stgs_')) return this._json({ allow: false, reason: 'service_principal_not_granted' });
       if (cred && keyProblem) return this._json({ allow: false, reason: keyProblem });
-      if (cred && key.kind === 'service') return this._json({ allow: false, reason: 'unsupported_credential' });
       const e = this.live;
       const w = this.world;
       const principal = key ? this._principalSummary(w.principal(key.principal)) : e.principal || null;

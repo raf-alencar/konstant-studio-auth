@@ -5,7 +5,7 @@ const { createAuth: createCore, Principal, parsePermission } = require('./auth')
 const { expressAdapter } = require('./adapters/express');
 const { nextAdapter } = require('./adapters/next');
 const { ConfigError } = require('./config');
-const { routeAllowed } = require('./service-keys');
+const { routeAllowed, validatePolicy } = require('./service-keys');
 const { verifySignature, eventsWebhookHandler } = require('./events-webhook');
 
 function createAuth(opts) {
@@ -16,4 +16,4 @@ function createAuth(opts) {
   return core;
 }
 
-module.exports = { createAuth, Principal, ConfigError, parsePermission, routeAllowed, verifySignature };
+module.exports = { createAuth, Principal, ConfigError, parsePermission, routeAllowed, validatePolicy, verifySignature };

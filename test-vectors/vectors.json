@@ -2,8 +2,9 @@
   "$comment": "Shared test vectors for @konstant-studio/auth v2 (Node and Python consume this same file). Every value here is fake. `world` is what the platform would hold; `cases` are what the library must answer. `reason` is the PLATFORM's answer (parity-tested against /v1/authorize on a scratch copy of the C0b branch); `offline_reason` is set only where an offline decision cannot tell reasons apart and uses a coarser (still denying) one.",
   "version": 1,
   "contract": {
-    "platform_commit": "c872475434366646fb2752812e5845591098d070",
-    "platform_branch": "feat/control-plane-c0a-c0b"
+    "platform_commit": "79f4fce",
+    "platform_branch": "feat/control-plane-c0a-c0b",
+    "note": "Pinned at the committed C0b2. The CoS's C0b2 fixes (mandatory expect_service, uniform key_not_found, audit bounds) are still to land; the service-key cases below follow the CoS contract note and stay pending-platform until they do."
   },
   "config": {
     "service": "docs",
@@ -11,347 +12,2209 @@
     "stale_read_ttl_seconds": 300,
     "clerk": {
       "issuer": "https://clerk.vectors.test",
-      "authorized_parties": ["https://app.vectors.test"]
-    }
+      "authorized_parties": [
+        "https://app.vectors.test"
+      ]
+    },
+    "accepted_caller_services": [
+      "image",
+      "video"
+    ]
   },
   "world": {
     "namespace": "6f9d7b0e-8a63-5c2f-9f3e-4b1d2a7c5e10",
     "now": "2026-10-01T12:00:00Z",
     "catalog": [
-      {"service": "docs",   "action": "read",     "category": "read",    "sensitive": false},
-      {"service": "docs",   "action": "write",    "category": "write",   "sensitive": false},
-      {"service": "docs",   "action": "render",   "category": "write",   "sensitive": false},
-      {"service": "docs",   "action": "delete",   "category": "manage",  "sensitive": true},
-      {"service": "mail",   "action": "read",     "category": "read",    "sensitive": false},
-      {"service": "mail",   "action": "send",     "category": "write",   "sensitive": true},
-      {"service": "mail",   "action": "manage",   "category": "manage",  "sensitive": true},
-      {"service": "social", "action": "read",     "category": "read",    "sensitive": false},
-      {"service": "social", "action": "write",    "category": "write",   "sensitive": false},
-      {"service": "social", "action": "approve",  "category": "approve", "sensitive": true}
+      {
+        "service": "docs",
+        "action": "read",
+        "category": "read",
+        "sensitive": false
+      },
+      {
+        "service": "docs",
+        "action": "write",
+        "category": "write",
+        "sensitive": false
+      },
+      {
+        "service": "docs",
+        "action": "render",
+        "category": "write",
+        "sensitive": false
+      },
+      {
+        "service": "docs",
+        "action": "delete",
+        "category": "manage",
+        "sensitive": true
+      },
+      {
+        "service": "mail",
+        "action": "read",
+        "category": "read",
+        "sensitive": false
+      },
+      {
+        "service": "mail",
+        "action": "send",
+        "category": "write",
+        "sensitive": true
+      },
+      {
+        "service": "mail",
+        "action": "manage",
+        "category": "manage",
+        "sensitive": true
+      },
+      {
+        "service": "social",
+        "action": "read",
+        "category": "read",
+        "sensitive": false
+      },
+      {
+        "service": "social",
+        "action": "write",
+        "category": "write",
+        "sensitive": false
+      },
+      {
+        "service": "social",
+        "action": "approve",
+        "category": "approve",
+        "sensitive": true
+      }
     ],
     "tenants": [
-      {"ref": "root",         "type": "root",   "parent": null,    "status": "active"},
-      {"ref": "acme",         "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "acme_brand",   "type": "brand",  "parent": "acme",  "status": "active"},
-      {"ref": "globex",       "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "dormant",      "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "suspended_co", "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "inactive_co",  "type": "client", "parent": "root",  "status": "inactive"},
-      {"ref": "expired_co",   "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "future_co",    "type": "client", "parent": "root",  "status": "active"},
-      {"ref": "ending_co",    "type": "client", "parent": "root",  "status": "active", "transient": true}
+      {
+        "ref": "root",
+        "type": "root",
+        "parent": null,
+        "status": "active",
+        "org_id": null
+      },
+      {
+        "ref": "acme",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": "org_acme"
+      },
+      {
+        "ref": "acme_brand",
+        "type": "brand",
+        "parent": "acme",
+        "status": "active",
+        "org_id": null
+      },
+      {
+        "ref": "globex",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": "org_globex"
+      },
+      {
+        "ref": "dormant",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": "org_dormant"
+      },
+      {
+        "ref": "suspended_co",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": null
+      },
+      {
+        "ref": "inactive_co",
+        "type": "client",
+        "parent": "root",
+        "status": "inactive",
+        "org_id": null
+      },
+      {
+        "ref": "expired_co",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": null
+      },
+      {
+        "ref": "future_co",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "org_id": null
+      },
+      {
+        "ref": "ending_co",
+        "type": "client",
+        "parent": "root",
+        "status": "active",
+        "transient": true,
+        "org_id": null
+      }
     ],
     "entitlements": [
-      {"tenant": "root",         "service": "docs",   "state": "on"},
-      {"tenant": "acme",         "service": "docs",   "state": "on", "plan": "pro"},
-      {"tenant": "acme",         "service": "mail",   "state": "on"},
-      {"tenant": "acme",         "service": "social", "state": "on"},
-      {"tenant": "acme_brand",   "service": "docs",   "state": "on"},
-      {"tenant": "globex",       "service": "docs",   "state": "on"},
-      {"tenant": "suspended_co", "service": "docs",   "state": "suspended"},
-      {"tenant": "inactive_co",  "service": "docs",   "state": "on"},
-      {"tenant": "expired_co",   "service": "docs",   "state": "on", "ends_in_s": -86400},
-      {"tenant": "future_co",    "service": "docs",   "state": "on", "starts_in_s": 86400},
-      {"tenant": "ending_co",    "service": "docs",   "state": "on", "ends_in_s": 25, "transient": true}
+      {
+        "tenant": "root",
+        "service": "docs",
+        "state": "on"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "state": "on",
+        "plan": "pro"
+      },
+      {
+        "tenant": "acme",
+        "service": "mail",
+        "state": "on"
+      },
+      {
+        "tenant": "acme",
+        "service": "social",
+        "state": "on"
+      },
+      {
+        "tenant": "acme_brand",
+        "service": "docs",
+        "state": "on"
+      },
+      {
+        "tenant": "globex",
+        "service": "docs",
+        "state": "on"
+      },
+      {
+        "tenant": "suspended_co",
+        "service": "docs",
+        "state": "suspended"
+      },
+      {
+        "tenant": "inactive_co",
+        "service": "docs",
+        "state": "on"
+      },
+      {
+        "tenant": "expired_co",
+        "service": "docs",
+        "state": "on",
+        "ends_in_s": -86400
+      },
+      {
+        "tenant": "future_co",
+        "service": "docs",
+        "state": "on",
+        "starts_in_s": 86400
+      },
+      {
+        "tenant": "ending_co",
+        "service": "docs",
+        "state": "on",
+        "ends_in_s": 25,
+        "transient": true
+      }
     ],
     "roles": [
-      {"ref": "globex_editor", "slug": "globex-editor", "tenant": "globex", "permissions": ["docs:write"]}
+      {
+        "ref": "globex_editor",
+        "slug": "globex-editor",
+        "tenant": "globex",
+        "permissions": [
+          "docs:write"
+        ]
+      }
     ],
     "principals": [
-      {"ref": "alice",       "kind": "human", "user_id": "user_alice"},
-      {"ref": "bob",         "kind": "human", "user_id": "user_bob"},
-      {"ref": "carol",       "kind": "human", "user_id": "user_carol"},
-      {"ref": "dan",         "kind": "human", "user_id": "user_dan"},
-      {"ref": "amy",         "kind": "human", "user_id": "user_amy"},
-      {"ref": "erin",        "kind": "human", "user_id": "user_erin"},
-      {"ref": "rafa",        "kind": "human", "user_id": "user_rafa"},
-      {"ref": "pat",         "kind": "human", "user_id": "user_pat"},
-      {"ref": "sam",         "kind": "human", "user_id": "user_sam"},
-      {"ref": "ivy",         "kind": "human", "user_id": "user_ivy"},
-      {"ref": "exa",         "kind": "human", "user_id": "user_exa"},
-      {"ref": "fut",         "kind": "human", "user_id": "user_fut"},
-      {"ref": "cross",       "kind": "human", "user_id": "user_cross"},
-      {"ref": "domi",        "kind": "human", "user_id": "user_domi"},
-      {"ref": "gus",         "kind": "human", "user_id": "user_gus"},
-      {"ref": "stu",         "kind": "human", "user_id": "user_stu"},
-      {"ref": "tim",         "kind": "human", "user_id": "user_tim", "transient": true},
-      {"ref": "dee",         "kind": "human", "user_id": "user_dee", "status": "disabled"},
-      {"ref": "ghost",       "kind": "human", "user_id": "user_ghost", "no_principal": true},
-      {"ref": "agent_acme",  "kind": "agent",   "tenant": "acme"},
-      {"ref": "guest_acme",  "kind": "guest",   "tenant": "acme"},
-      {"ref": "svc_docs",    "kind": "service", "service": "docs"}
+      {
+        "ref": "alice",
+        "kind": "human",
+        "user_id": "user_alice"
+      },
+      {
+        "ref": "bob",
+        "kind": "human",
+        "user_id": "user_bob"
+      },
+      {
+        "ref": "carol",
+        "kind": "human",
+        "user_id": "user_carol"
+      },
+      {
+        "ref": "dan",
+        "kind": "human",
+        "user_id": "user_dan"
+      },
+      {
+        "ref": "amy",
+        "kind": "human",
+        "user_id": "user_amy"
+      },
+      {
+        "ref": "erin",
+        "kind": "human",
+        "user_id": "user_erin"
+      },
+      {
+        "ref": "rafa",
+        "kind": "human",
+        "user_id": "user_rafa"
+      },
+      {
+        "ref": "pat",
+        "kind": "human",
+        "user_id": "user_pat"
+      },
+      {
+        "ref": "sam",
+        "kind": "human",
+        "user_id": "user_sam"
+      },
+      {
+        "ref": "ivy",
+        "kind": "human",
+        "user_id": "user_ivy"
+      },
+      {
+        "ref": "exa",
+        "kind": "human",
+        "user_id": "user_exa"
+      },
+      {
+        "ref": "fut",
+        "kind": "human",
+        "user_id": "user_fut"
+      },
+      {
+        "ref": "cross",
+        "kind": "human",
+        "user_id": "user_cross"
+      },
+      {
+        "ref": "domi",
+        "kind": "human",
+        "user_id": "user_domi"
+      },
+      {
+        "ref": "gus",
+        "kind": "human",
+        "user_id": "user_gus"
+      },
+      {
+        "ref": "stu",
+        "kind": "human",
+        "user_id": "user_stu"
+      },
+      {
+        "ref": "tim",
+        "kind": "human",
+        "user_id": "user_tim",
+        "transient": true
+      },
+      {
+        "ref": "dee",
+        "kind": "human",
+        "user_id": "user_dee",
+        "status": "disabled"
+      },
+      {
+        "ref": "ghost",
+        "kind": "human",
+        "user_id": "user_ghost",
+        "no_principal": true
+      },
+      {
+        "ref": "agent_acme",
+        "kind": "agent",
+        "tenant": "acme"
+      },
+      {
+        "ref": "guest_acme",
+        "kind": "guest",
+        "tenant": "acme"
+      },
+      {
+        "ref": "svc_image",
+        "kind": "service",
+        "service": "image"
+      },
+      {
+        "ref": "svc_video",
+        "kind": "service",
+        "service": "video"
+      },
+      {
+        "ref": "svc_docs",
+        "kind": "service",
+        "service": "docs"
+      }
     ],
     "memberships": [
-      {"principal": "alice",      "tenant": "acme",         "role": "operator"},
-      {"principal": "bob",        "tenant": "acme",         "role": "viewer"},
-      {"principal": "bob",        "tenant": "globex",       "role": "viewer"},
-      {"principal": "carol",      "tenant": "acme",         "role": "operator", "scope": {"brand_ids": ["brand-a"]}},
-      {"principal": "dan",        "tenant": "acme",         "role": "approver"},
-      {"principal": "amy",        "tenant": "acme",         "role": "admin"},
-      {"principal": "erin",       "tenant": "acme",         "role": "operator", "expires_in_s": -3600},
-      {"principal": "rafa",       "tenant": "root",         "role": "owner", "scope": {"descendants": true}},
-      {"principal": "pat",        "tenant": "root",         "role": "viewer"},
-      {"principal": "sam",        "tenant": "suspended_co", "role": "operator"},
-      {"principal": "ivy",        "tenant": "inactive_co",  "role": "operator"},
-      {"principal": "exa",        "tenant": "expired_co",   "role": "operator"},
-      {"principal": "fut",        "tenant": "future_co",    "role": "operator"},
-      {"principal": "cross",      "tenant": "acme",         "role": "globex_editor"},
-      {"principal": "domi",       "tenant": "acme",         "role": "operator", "scope": {"domains": ["client.example"]}},
-      {"principal": "gus",        "tenant": "acme",         "role": "owner", "scope": {"descendants": true}},
-      {"principal": "stu",        "tenant": "root",         "role": "owner", "scope": {"descendants": "true"}},
-      {"principal": "tim",        "tenant": "acme",         "role": "operator", "expires_in_s": 25, "transient": true},
-      {"principal": "tim",        "tenant": "ending_co",    "role": "operator", "transient": true},
-      {"principal": "dee",        "tenant": "acme",         "role": "operator"},
-      {"principal": "agent_acme", "tenant": "acme",         "role": "operator"},
-      {"principal": "agent_acme", "tenant": "acme",         "role": "approver"},
-      {"principal": "guest_acme", "tenant": "acme",         "role": "viewer"},
-      {"principal": "guest_acme", "tenant": "acme",         "role": "operator"}
+      {
+        "principal": "alice",
+        "tenant": "acme",
+        "role": "operator"
+      },
+      {
+        "principal": "bob",
+        "tenant": "acme",
+        "role": "viewer"
+      },
+      {
+        "principal": "bob",
+        "tenant": "globex",
+        "role": "viewer"
+      },
+      {
+        "principal": "carol",
+        "tenant": "acme",
+        "role": "operator",
+        "scope": {
+          "brand_ids": [
+            "brand-a"
+          ]
+        }
+      },
+      {
+        "principal": "dan",
+        "tenant": "acme",
+        "role": "approver"
+      },
+      {
+        "principal": "amy",
+        "tenant": "acme",
+        "role": "admin"
+      },
+      {
+        "principal": "erin",
+        "tenant": "acme",
+        "role": "operator",
+        "expires_in_s": -3600
+      },
+      {
+        "principal": "rafa",
+        "tenant": "root",
+        "role": "owner",
+        "scope": {
+          "descendants": true
+        }
+      },
+      {
+        "principal": "pat",
+        "tenant": "root",
+        "role": "viewer"
+      },
+      {
+        "principal": "sam",
+        "tenant": "suspended_co",
+        "role": "operator"
+      },
+      {
+        "principal": "ivy",
+        "tenant": "inactive_co",
+        "role": "operator"
+      },
+      {
+        "principal": "exa",
+        "tenant": "expired_co",
+        "role": "operator"
+      },
+      {
+        "principal": "fut",
+        "tenant": "future_co",
+        "role": "operator"
+      },
+      {
+        "principal": "cross",
+        "tenant": "acme",
+        "role": "globex_editor"
+      },
+      {
+        "principal": "domi",
+        "tenant": "acme",
+        "role": "operator",
+        "scope": {
+          "domains": [
+            "client.example"
+          ]
+        }
+      },
+      {
+        "principal": "gus",
+        "tenant": "acme",
+        "role": "owner",
+        "scope": {
+          "descendants": true
+        }
+      },
+      {
+        "principal": "stu",
+        "tenant": "root",
+        "role": "owner",
+        "scope": {
+          "descendants": "true"
+        }
+      },
+      {
+        "principal": "tim",
+        "tenant": "acme",
+        "role": "operator",
+        "expires_in_s": 25,
+        "transient": true
+      },
+      {
+        "principal": "tim",
+        "tenant": "ending_co",
+        "role": "operator",
+        "transient": true
+      },
+      {
+        "principal": "dee",
+        "tenant": "acme",
+        "role": "operator"
+      },
+      {
+        "principal": "agent_acme",
+        "tenant": "acme",
+        "role": "operator"
+      },
+      {
+        "principal": "agent_acme",
+        "tenant": "acme",
+        "role": "approver"
+      },
+      {
+        "principal": "guest_acme",
+        "tenant": "acme",
+        "role": "viewer"
+      },
+      {
+        "principal": "guest_acme",
+        "tenant": "acme",
+        "role": "operator"
+      }
     ],
     "keys": [
-      {"ref": "agent_acme_active",  "principal": "agent_acme", "kind": "agent",   "state": "active"},
-      {"ref": "agent_acme_revoked", "principal": "agent_acme", "kind": "agent",   "state": "revoked"},
-      {"ref": "agent_acme_expired", "principal": "agent_acme", "kind": "agent",   "state": "expired"},
-      {"ref": "guest_acme_active",  "principal": "guest_acme", "kind": "guest",   "state": "active"},
-      {"ref": "agent_unknown",      "principal": null,         "kind": "agent",   "state": "unknown"},
-      {"ref": "svc_docs_active",    "principal": "svc_docs",   "kind": "service", "state": "active",  "routes": ["GET /v1/authorize/snapshot", "POST /v1/authorize"]},
-      {"ref": "svc_docs_revoked",   "principal": "svc_docs",   "kind": "service", "state": "revoked", "routes": ["POST /v1/authorize"]},
-      {"ref": "svc_docs_expired",   "principal": "svc_docs",   "kind": "service", "state": "expired", "routes": ["POST /v1/authorize"]}
+      {
+        "ref": "agent_acme_active",
+        "principal": "agent_acme",
+        "kind": "agent",
+        "state": "active"
+      },
+      {
+        "ref": "agent_acme_revoked",
+        "principal": "agent_acme",
+        "kind": "agent",
+        "state": "revoked"
+      },
+      {
+        "ref": "agent_acme_expired",
+        "principal": "agent_acme",
+        "kind": "agent",
+        "state": "expired"
+      },
+      {
+        "ref": "guest_acme_active",
+        "principal": "guest_acme",
+        "kind": "guest",
+        "state": "active"
+      },
+      {
+        "ref": "agent_unknown",
+        "principal": null,
+        "kind": "agent",
+        "state": "unknown"
+      },
+      {
+        "ref": "svc_image_active",
+        "principal": "svc_image",
+        "kind": "service",
+        "state": "active",
+        "routes": [
+          "POST /v1/authorize"
+        ]
+      },
+      {
+        "ref": "svc_image_revoked",
+        "principal": "svc_image",
+        "kind": "service",
+        "state": "revoked",
+        "routes": [
+          "POST /v1/authorize"
+        ]
+      },
+      {
+        "ref": "svc_image_expired",
+        "principal": "svc_image",
+        "kind": "service",
+        "state": "expired",
+        "routes": [
+          "POST /v1/authorize"
+        ]
+      },
+      {
+        "ref": "svc_image_unknown",
+        "principal": null,
+        "kind": "service",
+        "state": "unknown"
+      },
+      {
+        "ref": "svc_video_active",
+        "principal": "svc_video",
+        "kind": "service",
+        "state": "active",
+        "routes": [
+          "POST /v1/authorize"
+        ]
+      },
+      {
+        "ref": "svc_docs_active",
+        "principal": "svc_docs",
+        "kind": "service",
+        "state": "active",
+        "routes": [
+          "POST /v1/authorize"
+        ]
+      }
     ]
   },
   "cases": [
-    {"id": "human-read-allowed",        "desc": "operator reads in own tenant: decided offline from the snapshot",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline"}},
-    {"id": "human-write-allowed",       "desc": "non-sensitive write is still an offline decision",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:write", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline"}},
-    {"id": "viewer-write-denied",       "desc": "viewer holds read only",
-     "who": {"clerk": "bob"}, "ask": {"permission": "docs:write", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "unknown-permission",        "desc": "a permission outside the closed vocabulary is denied",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:frobnicate", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "unknown_permission", "status": 403, "tenant": null, "source": "offline"}},
-    {"id": "sensitive-allowed-live",    "desc": "sensitive actions are never answered from the cache",
-     "who": {"clerk": "amy"}, "ask": {"permission": "docs:delete", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["admin"], "sensitive": true, "source": "live"}},
-    {"id": "sensitive-denied-live",     "desc": "operator lacks the manage category",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:delete", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "sensitive": true, "source": "live"}},
-    {"id": "approver-live",             "desc": "another service's permission goes to the platform, never to this service's snapshot",
-     "who": {"clerk": "dan"}, "ask": {"permission": "social:approve", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["approver"], "sensitive": true, "source": "live"}},
-    {"id": "wrong-service",             "desc": "viewer asks for mail:send: this service cannot decide it offline",
-     "who": {"clerk": "bob"}, "ask": {"permission": "mail:send", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "sensitive": true, "source": "live"}},
-    {"id": "tenant-not-entitled",       "desc": "tenant has no entitlement for the service at all",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "dormant"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "dormant", "source": "offline"}},
-    {"id": "entitlement-suspended",     "desc": "suspended entitlement",
-     "who": {"clerk": "sam"}, "ask": {"permission": "docs:read", "tenant": "suspended_co"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "suspended_co", "source": "offline"}},
-    {"id": "tenant-inactive",           "desc": "inactive tenant; the snapshot only lists active ones so offline cannot tell it from not_entitled",
-     "who": {"clerk": "ivy"}, "ask": {"permission": "docs:read", "tenant": "inactive_co"},
-     "expect": {"allow": false, "reason": "tenant_inactive", "offline_reason": "not_entitled", "status": 403, "tenant": "inactive_co", "source": "offline"}},
-    {"id": "entitlement-window-ended",  "desc": "ends_at in the past: windows are data, applied against the consumer's clock",
-     "who": {"clerk": "exa"}, "ask": {"permission": "docs:read", "tenant": "expired_co"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "expired_co", "source": "offline"}},
-    {"id": "entitlement-not-started",   "desc": "starts_at in the future",
-     "who": {"clerk": "fut"}, "ask": {"permission": "docs:read", "tenant": "future_co"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "future_co", "source": "offline"}},
-    {"id": "wrong-tenant-human",        "desc": "member of acme acting in globex (entitled, but no membership there)",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "globex"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "globex", "source": "offline"}},
-    {"id": "no-upward-reach",           "desc": "a member of a child tenant has nothing on the parent",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "root"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "root", "source": "offline"}},
-    {"id": "membership-expired",        "desc": "an expired membership grants nothing",
-     "who": {"clerk": "erin"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "tenant-required",           "desc": "two tenants and none named: the platform decides, answer tenant_required",
-     "who": {"clerk": "bob"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": false, "reason": "tenant_required", "status": 403, "tenant": null, "source": "live"}},
-    {"id": "tenant-from-resolver",      "desc": "the adopter's tenant resolver names the tenant, so the decision is offline",
-     "who": {"clerk": "bob"}, "ask": {"permission": "docs:read", "resolver_tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["viewer"], "source": "offline"}},
-    {"id": "single-tenant-no-hint",     "desc": "no tenant named: the library does not guess offline, the platform picks the only one",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "live"}},
-    {"id": "scope-brand-allowed",       "desc": "membership scoped to brand-a, request names brand-a",
-     "who": {"clerk": "carol"}, "ask": {"permission": "docs:render", "tenant": "acme", "brand": "brand-a"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline"}},
-    {"id": "scope-brand-case-insensitive", "desc": "scope matching is case-insensitive",
-     "who": {"clerk": "carol"}, "ask": {"permission": "docs:render", "tenant": "acme", "brand": "BRAND-A"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline"}},
-    {"id": "scope-mismatch",            "desc": "request names another brand",
-     "who": {"clerk": "carol"}, "ask": {"permission": "docs:render", "tenant": "acme", "brand": "brand-b"},
-     "expect": {"allow": false, "reason": "out_of_scope", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "scope-required",            "desc": "restricted dimension not named by the request fails closed",
-     "who": {"clerk": "carol"}, "ask": {"permission": "docs:render", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "scope_required", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "scope-domain-allowed-live", "desc": "mail:send scoped to a domain: sensitive, so live",
-     "who": {"clerk": "domi"}, "ask": {"permission": "mail:send", "tenant": "acme", "domain": "client.example"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "sensitive": true, "source": "live"}},
-    {"id": "scope-domain-mismatch-live", "desc": "another domain",
-     "who": {"clerk": "domi"}, "ask": {"permission": "mail:send", "tenant": "acme", "domain": "other.example"},
-     "expect": {"allow": false, "reason": "out_of_scope", "status": 403, "tenant": "acme", "sensitive": true, "source": "live"}},
-    {"id": "agency-view-child",         "desc": "owner on the root with descendants acts in a child; via_tenant is reported",
-     "who": {"clerk": "rafa"}, "ask": {"permission": "docs:write", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "via_tenant": "root", "roles": ["owner"], "source": "offline"}},
-    {"id": "agency-view-grandchild",    "desc": "descendants reach any depth",
-     "who": {"clerk": "rafa"}, "ask": {"permission": "docs:read", "tenant": "acme_brand"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme_brand", "via_tenant": "root", "roles": ["owner"], "source": "offline"}},
-    {"id": "agency-view-needs-opt-in",  "desc": "a root member without descendants has nothing in a child",
-     "who": {"clerk": "pat"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "agency-entitlement-is-targets", "desc": "agency reach never bypasses the target tenant's entitlement",
-     "who": {"clerk": "rafa"}, "ask": {"permission": "docs:read", "tenant": "dormant"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "dormant", "source": "offline"}},
-    {"id": "agency-descendant-of-own-tenant", "desc": "descendants on a client tenant reaches that client's own brand",
-     "who": {"clerk": "gus"}, "ask": {"permission": "docs:read", "tenant": "acme_brand"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme_brand", "via_tenant": "acme", "roles": ["owner"], "source": "offline"}},
-    {"id": "agency-no-sideways",        "desc": "descendants never reaches a sibling tenant",
-     "who": {"clerk": "gus"}, "ask": {"permission": "docs:read", "tenant": "globex"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "globex", "source": "offline"}},
-    {"id": "agency-no-upward",          "desc": "descendants never reaches the parent",
-     "who": {"clerk": "gus"}, "ask": {"permission": "docs:read", "tenant": "root"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "root", "source": "offline"}},
-    {"id": "agency-descendants-string-true", "desc": "the platform compares scope->>'descendants' to 'true', so the JSON string \"true\" opts in as well",
-     "who": {"clerk": "stu"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "via_tenant": "root", "roles": ["owner"], "source": "offline"}},
-    {"id": "membership-expires-inside-cache", "desc": "the membership was valid when the snapshot was cached and has expired on the consumer's clock since",
-     "parity": false, "parity_note": "needs the consumer's clock to advance past an expiry; the real platform is asked fresh each time",
-     "cache_age_s": 28, "who": {"clerk": "tim"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "entitlement-ends-inside-cache", "desc": "the entitlement window closes while the snapshot is cached",
-     "parity": false, "parity_note": "needs the consumer's clock to advance past a window end",
-     "cache_age_s": 28, "who": {"clerk": "tim"}, "ask": {"permission": "docs:read", "tenant": "ending_co"},
-     "expect": {"allow": false, "reason": "not_entitled", "status": 403, "tenant": "ending_co", "source": "offline"}},
-    {"id": "custom-role-other-tenant",  "desc": "a custom role of another tenant grants nothing here",
-     "who": {"clerk": "cross"}, "ask": {"permission": "docs:write", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_permission", "status": 403, "tenant": "acme", "source": "offline"}},
-    {"id": "principal-disabled",        "desc": "disabled principal; the snapshot omits them so offline reports no_permission",
-     "who": {"clerk": "dee"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "principal_disabled", "offline_reason": "no_permission", "status": 403, "tenant": null, "source": "offline"}},
-    {"id": "principal-unknown",         "desc": "valid Clerk user the platform has never seen",
-     "who": {"clerk": "ghost"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "principal_not_found", "offline_reason": "no_permission", "status": 403, "tenant": null, "source": "offline"}},
-
-    {"id": "tenant-not-a-uuid",         "desc": "a tenant that cannot be a tenant id is a clean denial, decided here: never a platform 422 reported as an outage",
-     "parity": false, "parity_note": "the platform answers 422 for a malformed tenant_id; the library never sends it",
-     "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant_raw": "not-a-uuid"},
-     "expect": {"allow": false, "reason": "tenant_not_found", "status": 403, "tenant": null, "source": "none"}},
-    {"id": "tenant-not-a-uuid-agent",   "desc": "same for a key principal, whose check would otherwise go live",
-     "parity": false, "parity_note": "the platform answers 422 for a malformed tenant_id; the library never sends it",
-     "who": {"key": "agent_acme_active"}, "ask": {"permission": "docs:read", "tenant_raw": "../../etc"},
-     "expect": {"allow": false, "reason": "tenant_not_found", "status": 403, "tenant": null, "source": "none"}},
-    {"id": "agent-read-live",           "desc": "agent keys are always checked live; own tenant is implied",
-     "who": {"key": "agent_acme_active"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["approver", "operator"], "source": "live"}},
-    {"id": "agent-wrong-tenant",        "desc": "an agent is bound to one tenant",
-     "who": {"key": "agent_acme_active"}, "ask": {"permission": "docs:read", "tenant": "globex"},
-     "expect": {"allow": false, "reason": "wrong_tenant", "status": 403, "tenant": null, "source": "live"}},
-    {"id": "agent-approver-denied",     "desc": "agents are never approvers, whatever role they hold",
-     "who": {"key": "agent_acme_active"}, "ask": {"permission": "social:approve"},
-     "expect": {"allow": false, "reason": "principal_kind_restricted", "status": 403, "tenant": "acme", "sensitive": true, "source": "live"}},
-    {"id": "agent-key-revoked",         "desc": "revocation is immediate because key checks are never cached",
-     "who": {"key": "agent_acme_revoked"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": false, "reason": "key_revoked", "status": 401, "tenant": null, "source": "live"}},
-    {"id": "agent-key-expired",         "desc": "expired key",
-     "who": {"key": "agent_acme_expired"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": false, "reason": "key_expired", "status": 401, "tenant": null, "source": "live"}},
-    {"id": "agent-key-unknown",         "desc": "well-formed but unknown agent key",
-     "who": {"key": "agent_unknown"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": false, "reason": "key_not_found", "status": 401, "tenant": null, "source": "live"}},
-    {"id": "guest-read-live",           "desc": "guests may read",
-     "who": {"key": "guest_acme_active"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator", "viewer"], "source": "live"}},
-    {"id": "guest-write-denied",        "desc": "guests are read-only even with an operator role",
-     "who": {"key": "guest_acme_active"}, "ask": {"permission": "docs:write"},
-     "expect": {"allow": false, "reason": "principal_kind_restricted", "status": 403, "tenant": "acme", "source": "live"}},
-
-    {"id": "clerk-expired",             "desc": "expired session token",
-     "who": {"clerk": "alice", "token": {"exp_in_s": -600}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_expired", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-wrong-azp",           "desc": "azp is mandatory and must be listed",
-     "who": {"clerk": "alice", "token": {"azp": "https://evil.test"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-missing-azp",         "desc": "a token without azp is not ours",
-     "who": {"clerk": "alice", "token": {"azp": null}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-wrong-issuer",        "desc": "issuer mismatch",
-     "who": {"clerk": "alice", "token": {"iss": "https://other-clerk.test"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-wrong-signature",     "desc": "signed by a key that is not in the JWKS",
-     "who": {"clerk": "alice", "token": {"sign_with": "foreign"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-unknown-kid",         "desc": "kid not in the JWKS",
-     "who": {"clerk": "alice", "token": {"kid": "no-such-kid"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-unlisted-audience",   "desc": "an aud we did not list is refused",
-     "who": {"clerk": "alice", "token": {"aud": "https://not-listed.test"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-issued-in-the-future", "desc": "iat beyond the clock tolerance: the platform's verifier refuses it, so must we",
-     "who": {"clerk": "alice", "token": {"iat_in_s": 600}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-not-yet-valid",       "desc": "nbf in the future",
-     "who": {"clerk": "alice", "token": {"nbf_in_s": 600}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-alg-none",            "desc": "unsigned token",
-     "who": {"clerk": "alice", "token": {"alg": "none"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "clerk-alg-hs256",           "desc": "HMAC token (algorithm confusion)",
-     "who": {"clerk": "alice", "token": {"alg": "HS256"}}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "credential-missing",        "desc": "no credential at all",
-     "who": {"none": true}, "parity": false, "parity_note": "the platform endpoint rejects a request with no credential with 400, not a decision",
-     "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "no_credential", "status": 401, "tenant": null, "source": "none"}},
-    {"id": "bearer-not-a-key-or-jwt",   "desc": "a bearer that is neither a known key nor a JWT falls through to Clerk validation: clean 401 (CRM iOS path)",
-     "who": {"bearer": "not-a-key-and-not-a-jwt"}, "parity": false, "parity_note": "the platform treats a bare string as `credential` (unsupported_credential); the library routes it to Clerk validation by design",
-     "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "token_invalid", "status": 401, "tenant": null, "source": "none"}},
-
-    {"id": "down-sensitive",            "desc": "platform unreachable: sensitive actions fail closed",
-     "platform": "down", "who": {"clerk": "amy"}, "ask": {"permission": "docs:delete", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "platform_unavailable", "status": 503, "tenant": null, "source": "none"}},
-    {"id": "down-read-fresh-cache",     "desc": "platform unreachable, cache still fresh: reads answered offline",
-     "platform": "down", "cache_age_s": 5, "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline"}},
-    {"id": "down-read-stale-within",    "desc": "past the TTL but inside the stale-read window: reads still served",
-     "platform": "down", "cache_age_s": 120, "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": true, "reason": "allowed", "status": 200, "tenant": "acme", "roles": ["operator"], "source": "offline", "stale": true}},
-    {"id": "down-read-stale-beyond",    "desc": "beyond the stale-read window: fail closed",
-     "platform": "down", "cache_age_s": 400, "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "platform_unavailable", "status": 503, "tenant": null, "source": "none"}},
-    {"id": "down-write-stale",          "desc": "only read-category checks may be served stale",
-     "platform": "down", "cache_age_s": 120, "who": {"clerk": "alice"}, "ask": {"permission": "docs:write", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "platform_unavailable", "status": 503, "tenant": null, "source": "none"}},
-    {"id": "down-agent",                "desc": "agent keys cannot be checked without the platform",
-     "platform": "down", "cache_age_s": 5, "who": {"key": "agent_acme_active"}, "ask": {"permission": "docs:read"},
-     "expect": {"allow": false, "reason": "platform_unavailable", "status": 503, "tenant": null, "source": "none"}},
-    {"id": "down-cold-cache",           "desc": "no cache and no platform",
-     "platform": "down", "cache_age_s": null, "who": {"clerk": "alice"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "reason": "platform_unavailable", "status": 503, "tenant": null, "source": "none"}},
-
-    {"id": "service-key-resolves",      "desc": "a valid service key resolves to a service principal {kind: service, service, routes, tenant: null}",
-     "pending": "pending-platform: C0b2 must resolve stgs_ keys through /v1/principals/resolve",
-     "who": {"key": "svc_docs_active"}, "resolve_only": true, "ask": {},
-     "expect": {"allow": true, "status": 200, "principal": {"kind": "service", "service": "docs", "tenant": null, "routes": ["GET /v1/authorize/snapshot", "POST /v1/authorize"]}}},
-    {"id": "service-key-tenant-denied", "desc": "a service key is denied by default for every tenant-scoped permission",
-     "pending": "pending-platform: C0b2 must decide service principals in /v1/authorize",
-     "who": {"key": "svc_docs_active"}, "ask": {"permission": "docs:read", "tenant": "acme"},
-     "expect": {"allow": false, "status": 403}},
-    {"id": "service-key-approver-denied", "desc": "a service key can never hold an approver permission",
-     "pending": "pending-platform: C0b2 must decide service principals in /v1/authorize",
-     "who": {"key": "svc_docs_active"}, "ask": {"permission": "social:approve", "tenant": "acme"},
-     "expect": {"allow": false, "status": 403}},
-    {"id": "service-key-revoked",       "desc": "revoked service key",
-     "pending": "pending-platform: C0b2 must resolve stgs_ keys",
-     "who": {"key": "svc_docs_revoked"}, "resolve_only": true, "ask": {},
-     "expect": {"allow": false, "reason": "key_revoked", "status": 401}},
-    {"id": "service-key-expired",       "desc": "expired service key",
-     "pending": "pending-platform: C0b2 must resolve stgs_ keys",
-     "who": {"key": "svc_docs_expired"}, "resolve_only": true, "ask": {},
-     "expect": {"allow": false, "reason": "key_expired", "status": 401}}
+    {
+      "id": "human-read-allowed",
+      "desc": "operator reads in own tenant: decided offline from the snapshot",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "human-write-allowed",
+      "desc": "non-sensitive write is still an offline decision",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "viewer-write-denied",
+      "desc": "viewer holds read only",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "unknown-permission",
+      "desc": "a permission outside the closed vocabulary is denied",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:frobnicate",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "unknown_permission",
+        "status": 403,
+        "tenant": null,
+        "source": "offline"
+      }
+    },
+    {
+      "id": "sensitive-allowed-live",
+      "desc": "sensitive actions are never answered from the cache",
+      "who": {
+        "clerk": "amy"
+      },
+      "ask": {
+        "permission": "docs:delete",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "admin"
+        ],
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "sensitive-denied-live",
+      "desc": "operator lacks the manage category",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:delete",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "approver-live",
+      "desc": "another service's permission goes to the platform, never to this service's snapshot",
+      "who": {
+        "clerk": "dan"
+      },
+      "ask": {
+        "permission": "social:approve",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "approver"
+        ],
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "wrong-service",
+      "desc": "viewer asks for mail:send: this service cannot decide it offline",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "mail:send",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "tenant-not-entitled",
+      "desc": "tenant has no entitlement for the service at all",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "dormant"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "dormant",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "entitlement-suspended",
+      "desc": "suspended entitlement",
+      "who": {
+        "clerk": "sam"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "suspended_co"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "suspended_co",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "tenant-inactive",
+      "desc": "inactive tenant; the snapshot only lists active ones so offline cannot tell it from not_entitled",
+      "who": {
+        "clerk": "ivy"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "inactive_co"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_inactive",
+        "offline_reason": "not_entitled",
+        "status": 403,
+        "tenant": "inactive_co",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "entitlement-window-ended",
+      "desc": "ends_at in the past: windows are data, applied against the consumer's clock",
+      "who": {
+        "clerk": "exa"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "expired_co"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "expired_co",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "entitlement-not-started",
+      "desc": "starts_at in the future",
+      "who": {
+        "clerk": "fut"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "future_co"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "future_co",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "wrong-tenant-human",
+      "desc": "member of acme acting in globex (entitled, but no membership there)",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "globex"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "globex",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "no-upward-reach",
+      "desc": "a member of a child tenant has nothing on the parent",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "root"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "root",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "membership-expired",
+      "desc": "an expired membership grants nothing",
+      "who": {
+        "clerk": "erin"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "tenant-required",
+      "desc": "two tenants and none named: the platform decides, answer tenant_required",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_required",
+        "status": 403,
+        "tenant": null,
+        "source": "live"
+      }
+    },
+    {
+      "id": "tenant-from-resolver",
+      "desc": "the adopter's tenant resolver names the tenant, so the decision is offline",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "resolver_tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "single-tenant-no-hint",
+      "desc": "no tenant named: the library does not guess offline, the platform picks the only one",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "live"
+      }
+    },
+    {
+      "id": "scope-brand-allowed",
+      "desc": "membership scoped to brand-a, request names brand-a",
+      "who": {
+        "clerk": "carol"
+      },
+      "ask": {
+        "permission": "docs:render",
+        "tenant": "acme",
+        "brand": "brand-a"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "scope-brand-case-insensitive",
+      "desc": "scope matching is case-insensitive",
+      "who": {
+        "clerk": "carol"
+      },
+      "ask": {
+        "permission": "docs:render",
+        "tenant": "acme",
+        "brand": "BRAND-A"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "scope-mismatch",
+      "desc": "request names another brand",
+      "who": {
+        "clerk": "carol"
+      },
+      "ask": {
+        "permission": "docs:render",
+        "tenant": "acme",
+        "brand": "brand-b"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "out_of_scope",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "scope-required",
+      "desc": "restricted dimension not named by the request fails closed",
+      "who": {
+        "clerk": "carol"
+      },
+      "ask": {
+        "permission": "docs:render",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "scope_required",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "scope-domain-allowed-live",
+      "desc": "mail:send scoped to a domain: sensitive, so live",
+      "who": {
+        "clerk": "domi"
+      },
+      "ask": {
+        "permission": "mail:send",
+        "tenant": "acme",
+        "domain": "client.example"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "scope-domain-mismatch-live",
+      "desc": "another domain",
+      "who": {
+        "clerk": "domi"
+      },
+      "ask": {
+        "permission": "mail:send",
+        "tenant": "acme",
+        "domain": "other.example"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "out_of_scope",
+        "status": 403,
+        "tenant": "acme",
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "agency-view-child",
+      "desc": "owner on the root with descendants acts in a child; via_tenant is reported",
+      "who": {
+        "clerk": "rafa"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "via_tenant": "root",
+        "roles": [
+          "owner"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-view-grandchild",
+      "desc": "descendants reach any depth",
+      "who": {
+        "clerk": "rafa"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme_brand"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme_brand",
+        "via_tenant": "root",
+        "roles": [
+          "owner"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-view-needs-opt-in",
+      "desc": "a root member without descendants has nothing in a child",
+      "who": {
+        "clerk": "pat"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-entitlement-is-targets",
+      "desc": "agency reach never bypasses the target tenant's entitlement",
+      "who": {
+        "clerk": "rafa"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "dormant"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "dormant",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-descendant-of-own-tenant",
+      "desc": "descendants on a client tenant reaches that client's own brand",
+      "who": {
+        "clerk": "gus"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme_brand"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme_brand",
+        "via_tenant": "acme",
+        "roles": [
+          "owner"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-no-sideways",
+      "desc": "descendants never reaches a sibling tenant",
+      "who": {
+        "clerk": "gus"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "globex"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "globex",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-no-upward",
+      "desc": "descendants never reaches the parent",
+      "who": {
+        "clerk": "gus"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "root"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "root",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "agency-descendants-string-true",
+      "desc": "the platform compares scope->>'descendants' to 'true', so the JSON string \"true\" opts in as well",
+      "who": {
+        "clerk": "stu"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "via_tenant": "root",
+        "roles": [
+          "owner"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "membership-expires-inside-cache",
+      "desc": "the membership was valid when the snapshot was cached and has expired on the consumer's clock since",
+      "parity": false,
+      "parity_note": "needs the consumer's clock to advance past an expiry; the real platform is asked fresh each time",
+      "cache_age_s": 28,
+      "who": {
+        "clerk": "tim"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "entitlement-ends-inside-cache",
+      "desc": "the entitlement window closes while the snapshot is cached",
+      "parity": false,
+      "parity_note": "needs the consumer's clock to advance past a window end",
+      "cache_age_s": 28,
+      "who": {
+        "clerk": "tim"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "ending_co"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "not_entitled",
+        "status": 403,
+        "tenant": "ending_co",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "custom-role-other-tenant",
+      "desc": "a custom role of another tenant grants nothing here",
+      "who": {
+        "clerk": "cross"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "acme",
+        "source": "offline"
+      }
+    },
+    {
+      "id": "principal-disabled",
+      "desc": "disabled principal; the snapshot omits them so offline reports no_permission",
+      "who": {
+        "clerk": "dee"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "principal_disabled",
+        "offline_reason": "no_permission",
+        "status": 403,
+        "tenant": null,
+        "source": "offline"
+      }
+    },
+    {
+      "id": "principal-unknown",
+      "desc": "valid Clerk user the platform has never seen",
+      "who": {
+        "clerk": "ghost"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "principal_not_found",
+        "offline_reason": "no_permission",
+        "status": 403,
+        "tenant": null,
+        "source": "offline"
+      }
+    },
+    {
+      "id": "tenant-not-a-uuid",
+      "desc": "a tenant that cannot be a tenant id is a clean denial, decided here: never a platform 422 reported as an outage",
+      "parity": false,
+      "parity_note": "the platform answers 422 for a malformed tenant_id; the library never sends it",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_raw": "not-a-uuid"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_not_found",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "tenant-not-a-uuid-agent",
+      "desc": "same for a key principal, whose check would otherwise go live",
+      "parity": false,
+      "parity_note": "the platform answers 422 for a malformed tenant_id; the library never sends it",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_raw": "../../etc"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_not_found",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "agent-read-live",
+      "desc": "agent keys are always checked live; own tenant is implied",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "approver",
+          "operator"
+        ],
+        "source": "live"
+      }
+    },
+    {
+      "id": "agent-wrong-tenant",
+      "desc": "an agent is bound to one tenant",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "globex"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "wrong_tenant",
+        "status": 403,
+        "tenant": null,
+        "source": "live"
+      }
+    },
+    {
+      "id": "agent-approver-denied",
+      "desc": "agents are never approvers, whatever role they hold",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "social:approve"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "principal_kind_restricted",
+        "status": 403,
+        "tenant": "acme",
+        "sensitive": true,
+        "source": "live"
+      }
+    },
+    {
+      "id": "agent-key-revoked",
+      "desc": "revocation is immediate because key checks are never cached",
+      "who": {
+        "key": "agent_acme_revoked"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_revoked",
+        "status": 401,
+        "tenant": null,
+        "source": "live"
+      }
+    },
+    {
+      "id": "agent-key-expired",
+      "desc": "expired key",
+      "who": {
+        "key": "agent_acme_expired"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_expired",
+        "status": 401,
+        "tenant": null,
+        "source": "live"
+      }
+    },
+    {
+      "id": "agent-key-unknown",
+      "desc": "well-formed but unknown agent key",
+      "who": {
+        "key": "agent_unknown"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401,
+        "tenant": null,
+        "source": "live"
+      }
+    },
+    {
+      "id": "guest-read-live",
+      "desc": "guests may read",
+      "who": {
+        "key": "guest_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator",
+          "viewer"
+        ],
+        "source": "live"
+      }
+    },
+    {
+      "id": "guest-write-denied",
+      "desc": "guests are read-only even with an operator role",
+      "who": {
+        "key": "guest_acme_active"
+      },
+      "ask": {
+        "permission": "docs:write"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "principal_kind_restricted",
+        "status": 403,
+        "tenant": "acme",
+        "source": "live"
+      }
+    },
+    {
+      "id": "clerk-expired",
+      "desc": "expired session token",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "exp_in_s": -600
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_expired",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-wrong-azp",
+      "desc": "azp is mandatory and must be listed",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "azp": "https://evil.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-missing-azp",
+      "desc": "a token without azp is not ours",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "azp": null
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-wrong-issuer",
+      "desc": "issuer mismatch",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://other-clerk.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-wrong-signature",
+      "desc": "signed by a key that is not in the JWKS",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "sign_with": "foreign"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-unknown-kid",
+      "desc": "kid not in the JWKS",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "kid": "no-such-kid"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-unlisted-audience",
+      "desc": "an aud we did not list is refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "aud": "https://not-listed.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-issued-in-the-future",
+      "desc": "iat beyond the clock tolerance: the platform's verifier refuses it, so must we",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iat_in_s": 600
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-not-yet-valid",
+      "desc": "nbf in the future",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "nbf_in_s": 600
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-alg-none",
+      "desc": "unsigned token",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "alg": "none"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-alg-hs256",
+      "desc": "HMAC token (algorithm confusion)",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "alg": "HS256"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "credential-missing",
+      "desc": "no credential at all",
+      "who": {
+        "none": true
+      },
+      "parity": false,
+      "parity_note": "the platform endpoint rejects a request with no credential with 400, not a decision",
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_credential",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "bearer-not-a-key-or-jwt",
+      "desc": "a bearer that is neither a known key nor a JWT falls through to Clerk validation: clean 401 (CRM iOS path)",
+      "who": {
+        "bearer": "not-a-key-and-not-a-jwt"
+      },
+      "parity": false,
+      "parity_note": "the platform treats a bare string as `credential` (unsupported_credential); the library routes it to Clerk validation by design",
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "down-sensitive",
+      "desc": "platform unreachable: sensitive actions fail closed",
+      "platform": "down",
+      "who": {
+        "clerk": "amy"
+      },
+      "ask": {
+        "permission": "docs:delete",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "down-read-fresh-cache",
+      "desc": "platform unreachable, cache still fresh: reads answered offline",
+      "platform": "down",
+      "cache_age_s": 5,
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "down-read-stale-within",
+      "desc": "past the TTL but inside the stale-read window: reads still served",
+      "platform": "down",
+      "cache_age_s": 120,
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline",
+        "stale": true
+      }
+    },
+    {
+      "id": "down-read-stale-beyond",
+      "desc": "beyond the stale-read window: fail closed",
+      "platform": "down",
+      "cache_age_s": 400,
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "down-write-stale",
+      "desc": "only read-category checks may be served stale",
+      "platform": "down",
+      "cache_age_s": 120,
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "down-agent",
+      "desc": "agent keys cannot be checked without the platform",
+      "platform": "down",
+      "cache_age_s": 5,
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "down-cold-cache",
+      "desc": "no cache and no platform",
+      "platform": "down",
+      "cache_age_s": null,
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "service-key-resolves",
+      "desc": "an accepted caller service's key resolves to a service principal {kind: service, service, tenant: null}; the library asked with expect_service for each accepted service",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_active"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": true,
+        "status": 200,
+        "principal": {
+          "kind": "service",
+          "service": "image",
+          "tenant": null
+        }
+      }
+    },
+    {
+      "id": "service-key-second-accepted-service",
+      "desc": "every accepted caller service is tried; the match is the key's own service",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_video_active"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": true,
+        "status": 200,
+        "principal": {
+          "kind": "service",
+          "service": "video",
+          "tenant": null
+        }
+      }
+    },
+    {
+      "id": "service-key-unaccepted-service",
+      "desc": "a valid key from a service this app does not accept is refused with the SAME answer as an unknown key",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_docs_active"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401
+      }
+    },
+    {
+      "id": "service-key-revoked",
+      "desc": "revoked: uniform key_not_found (the specific reason is the platform's audit detail only)",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_revoked"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401
+      }
+    },
+    {
+      "id": "service-key-expired",
+      "desc": "expired: uniform key_not_found",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_expired"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401
+      }
+    },
+    {
+      "id": "service-key-unknown",
+      "desc": "unknown: uniform key_not_found",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_unknown"
+      },
+      "resolve_only": true,
+      "ask": {},
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401
+      }
+    },
+    {
+      "id": "service-key-tenant-denied",
+      "desc": "a service principal is denied every tenant-scoped permission; the offline path must answer exactly as the platform does",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "service_principal_not_granted",
+        "status": 403
+      }
+    },
+    {
+      "id": "service-key-approver-denied",
+      "desc": "never an approver permission either",
+      "pending": "pending-platform: the CoS C0b2 fixes (mandatory expect_service, uniform key_not_found) have not landed",
+      "who": {
+        "key": "svc_image_active"
+      },
+      "ask": {
+        "permission": "social:approve",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "service_principal_not_granted",
+        "status": 403
+      }
+    },
+    {
+      "id": "org-claim-maps-tenant",
+      "desc": "no tenant named, two memberships: the Clerk org in the session token names the tenant (snapshot org_id), so the decision is offline",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity_tenant": "acme"
+    },
+    {
+      "id": "org-claim-v2-token-shape",
+      "desc": "Clerk's v2 session token carries the org as o.id",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "o": {
+              "id": "org_acme",
+              "rol": "admin"
+            }
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity_tenant": "acme"
+    },
+    {
+      "id": "org-claim-other-org-is-not-widened",
+      "desc": "the claimed org is globex but this user is only a member of acme: denied, never silently moved to the tenant they do belong to",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_globex"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "globex",
+        "source": "offline"
+      },
+      "parity_tenant": "globex"
+    },
+    {
+      "id": "org-claim-explicit-tenant-wins",
+      "desc": "an explicit tenant beats the org claim",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_globex"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org-claim-not-in-snapshot-falls-back-live",
+      "desc": "the claimed org's tenant has no docs entitlement, so it is not in the snapshot: no offline mapping, the platform decides",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_dormant"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "live"
+      }
+    },
+    {
+      "id": "org-claim-unknown-org-falls-back-live",
+      "desc": "an org the platform does not know: nothing to map, the platform decides (tenant_required for a two-tenant member)",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_unknown"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_required",
+        "status": 403,
+        "tenant": null,
+        "source": "live"
+      }
+    }
   ]
 }

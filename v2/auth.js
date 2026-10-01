@@ -23,7 +23,8 @@ const { SnapshotCache } = require('./snapshot-cache');
 const { ClerkVerifier, Denied } = require('./clerk');
 const { extract } = require('./credentials');
 const { decideOffline } = require('./decision');
-const { resolveServiceKey } = require('./service-keys');
+const { ServiceKeyResolver, routeAllowed } = require('./service-keys');
+const { scopeAllows } = require('./decision');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTOR_KIND = { human: 'human', agent: 'agent', guest: 'guest', service: 'system' };
@@ -33,7 +34,7 @@ class Principal {
     Object.assign(
       this,
       { kind: null, id: null, userId: null, tenant: null, ancestry: [], roles: [], permissions: [],
-        keyId: null, keyPrefix: null, source: null, service: null, routes: null, claims: null },
+        keyId: null, keyPrefix: null, source: null, service: null, claims: null },
       fields
     );
   }
@@ -57,6 +58,10 @@ function createAuth(opts = {}) {
   const client = new PlatformClient({
     baseUrl: cfg.platformUrl, key: cfg.platformKey, fetch: cfg.fetch,
     timeoutMs: cfg.requestTimeoutMs, logger: cfg.logger,
+  });
+  ServiceKeyResolver.validateAccepted(cfg.acceptedCallerServices); // a bad slug is a startup error
+  const serviceKeys = new ServiceKeyResolver({
+    client, accepted: cfg.acceptedCallerServices, now: cfg.now, logger: cfg.logger, ...cfg.serviceKeyCache,
   });
   const clerk = new ClerkVerifier(cfg.clerk, { fetch: cfg.fetch, now: cfg.now, logger: cfg.logger });
   const cache = cfg.service
@@ -94,6 +99,7 @@ function createAuth(opts = {}) {
       type: 'auth.decision', ts: new Date(cfg.now()).toISOString(), service: cfg.service || null,
       permission, allow: res.allow, reason: res.reason, source: res.source, stale: res.stale,
       tenant_id: res.tenantId, via_tenant: res.viaTenant,
+      caller_service: res.principal?.kind === 'service' ? res.principal.service : null,
       actor: res.principal ? res.principal.actor() : null,
       key_id: res.principal?.keyId ?? null, run_id: requestId ?? null,
     });
@@ -112,7 +118,8 @@ function createAuth(opts = {}) {
         return {
           principal: new Principal({
             kind: 'human', id: claims.sub, userId: claims.sub, source: 'clerk',
-            claims: { azp: claims.azp, org_id: claims.org_id ?? null, org_role: claims.org_role ?? null, fva: claims.fva ?? null },
+            // Clerk's v1 session token carries org_id/org_role, the v2 token carries them as o.{id,rol}.
+            claims: { azp: claims.azp, org_id: claims.org_id ?? claims.o?.id ?? null, org_role: claims.org_role ?? claims.o?.rol ?? null, fva: claims.fva ?? null },
           }),
         };
       } catch (err) {
@@ -130,15 +137,14 @@ function createAuth(opts = {}) {
     if (!cred.keyKind) return { denied: 'key_not_found' };
     if (cred.keyKind === 'service') {
       try {
-        const sp = await resolveServiceKey(cred.raw, { mode: cfg.serviceKeys, client });
+        const sp = await serviceKeys.resolve(cred.raw);
         return {
           principal: new Principal({
-            kind: 'service', id: sp.id, service: sp.service, routes: sp.routes, keyId: sp.keyId,
-            keyPrefix: 'stgs_', source: 'platform_key',
+            kind: 'service', id: sp.id, service: sp.service, keyId: sp.keyId, keyPrefix: 'stgs_', source: 'platform_key',
           }),
         };
       } catch (err) {
-        if (err instanceof Denied) return { denied: err.reason };
+        if (err instanceof Denied) return { denied: err.reason }; // key_not_found (uniform) or platform_unavailable
         throw err;
       }
     }
@@ -172,6 +178,27 @@ function createAuth(opts = {}) {
   }
 
   // ---- decisions ------------------------------------------------------------
+
+  // Which tenant is this request about? In order: the explicit argument (an `x-tenant` header
+  // is passed in as one by the adapters); the adopter's tenantResolver; then the Clerk
+  // organization in the session token, mapped through the snapshot's tenant.org_id. The
+  // mapping is identity, not authority: whatever tenant comes out, the decision still has to
+  // find the user's membership in it (an org the user does not belong to is denied, never
+  // silently swapped for one they do). With none, the platform answers tenant_required.
+  async function selectTenant(explicit, principal, req) {
+    if (explicit) return explicit; // '' is no tenant
+    if (principal.kind !== 'human') return null;
+    if (cfg.tenantResolver) {
+      const t = (await cfg.tenantResolver(req, principal)) ?? null;
+      if (t) return t;
+    }
+    const orgId = principal.claims?.org_id;
+    if (orgId && cache) {
+      const snap = await cache.get(); // a stale snapshot is fine here: it only names a tenant
+      if (snap.state !== 'none') return snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id ?? null;
+    }
+    return null;
+  }
 
   async function live(cred, principal, parsed, resource) {
     const body = {
@@ -212,18 +239,14 @@ function createAuth(opts = {}) {
       if (found.denied) return result({ allow: false, reason: found.denied });
       const principal = found.principal;
 
-      // Service principals are denied by default for tenant-scoped permissions; the
-      // platform (C0b2) is the only thing that can say otherwise, so ask it.
+      // A service principal holds no tenant permissions: a tenant is not part of one, and the platform
+      // grants it nothing (it answers service_principal_not_granted, so this offline answer is the same).
+      // Who a service caller is allowed to be on THIS app's routes is requireServiceCaller's job.
       if (principal.kind === 'service') {
-        return await live(cred, principal, parsed, resource);
+        return result({ allow: false, reason: 'service_principal_not_granted', principal });
       }
 
-      // Tenant: explicit argument, else the adopter's resolver (Clerk org -> tenant until
-      // the snapshot carries org_id). With none, the platform answers tenant_required.
-      let tenant = resource.tenant || null; // '' is no tenant: the platform answers tenant_required
-      if (!tenant && cfg.tenantResolver && principal.kind === 'human') {
-        tenant = (await cfg.tenantResolver(req, principal)) ?? null;
-      }
+      let tenant = await selectTenant(resource.tenant, principal, req);
       // The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name a
       // tenant: answer it here as a denial instead of sending it on and reporting the platform's 422
       // as an outage (a client mistake must not look like platform_unavailable).
@@ -298,9 +321,76 @@ function createAuth(opts = {}) {
     };
   }
 
+  // ---- effective permissions (platform C0b2) -------------------------------------
+  //
+  // What the platform says this principal may do in a tenant, computed by the same code path as
+  // /v1/authorize, so a caller (a UI deciding which buttons to show, a service listing what an agent
+  // can reach) need not re-implement the rules. `permits(permission, resource)` applies the documented
+  // matching rule: allowed iff SOME scope entry admits the resource (each of brand_ids / domains /
+  // mailboxes present must contain the request's brand / domain / mailbox, case-insensitive; an
+  // absent key is unrestricted; an unknown key admits nothing). This is information, not a gate:
+  // enforcement is authorize(), which asks the platform (or the parity-tested snapshot) per request.
+  async function effectivePermissions({ headers, credential, tenant, service, req } = {}) {
+    const cred = credential ?? extract(headers);
+    const found = await principalFrom(cred);
+    if (found.denied) return { ok: false, reason: found.denied, status: statusFor(found.denied, false) };
+    const principal = found.principal;
+    const none = (reason, extra = {}) => ({ ok: true, principal, tenantId: null, reason, permissions: [], permits: () => false, ...extra });
+    if (principal.kind === 'service') return none('service_principal_not_granted');
+
+    const chosen = await selectTenant(tenant, principal, req);
+    if (chosen && !UUID_RE.test(String(chosen))) return none('tenant_not_found');
+    const body = {
+      include_effective: true,
+      ...(chosen ? { tenant_id: chosen } : {}),
+      ...(service ? { service } : {}),
+      ...(cred.type === 'clerk' ? { clerk_token: cred.raw } : cred.type === 'audience' ? { audience_token: cred.raw } : { credential: cred.raw }),
+    };
+    let res;
+    try {
+      res = await client.resolve(body);
+    } catch (err) {
+      if (err instanceof PlatformUnavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
+      throw err;
+    }
+    if (!res.valid) return { ok: false, reason: res.reason, status: statusFor(res.reason, false) };
+    if (!res.principal || !res.effective) return { ok: false, reason: 'platform_unavailable', status: 503 };
+    const p = fromPlatformSummary(res.principal, res.key_id, principal);
+    const eff = res.effective;
+    p.tenant = eff.tenant_id ?? null;
+    p.permissions = (eff.permissions || []).map((e) => e.permission).sort();
+    const permits = (permission, resource = {}) => {
+      const entry = (eff.permissions || []).find((e) => e.permission === permission);
+      return !!entry && entry.scopes.some((sc) => scopeAllows(sc.scope, resource) === null);
+    };
+    return { ok: true, principal: p, tenantId: p.tenant, reason: eff.reason ?? null, permissions: eff.permissions || [], permits };
+  }
+
+  // ---- service callers ------------------------------------------------------------
+  //
+  // An inbound call from another internal service. A matched service key proves WHICH service is
+  // calling (and only that); what it may do on this app's routes is this app's own policy:
+  //   policy = { '<caller service>': ['METHOD /path/glob', ...] }   (deny by default)
+  // The platform's allowed_routes for the key are routes on the platform's API and play no part here.
+  async function authorizeServiceCaller({ headers, credential, method, path, policy } = {}) {
+    try {
+      const cred = credential ?? extract(headers);
+      const found = await principalFrom(cred);
+      let res;
+      if (found.denied) res = result({ allow: false, reason: found.denied });
+      else if (found.principal.kind !== 'service') res = result({ allow: false, reason: 'service_caller_required', principal: found.principal });
+      else if (!routeAllowed(policy?.[found.principal.service], method, path)) res = result({ allow: false, reason: 'route_not_allowed', principal: found.principal });
+      else res = result({ allow: true, reason: 'allowed', principal: found.principal, source: 'live' });
+      return audited(res, 'service_caller', undefined);
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} while deciding`);
+      return audited(result({ allow: false, reason: 'platform_unavailable' }), 'service_caller', undefined);
+    }
+  }
+
   const core = {
-    config: cfg, client, cache, clerk,
-    authorize, authorizeApprover, resolvePrincipal, assertTenant, usageContext,
+    config: cfg, client, cache, clerk, serviceKeys,
+    authorize, authorizeApprover, resolvePrincipal, effectivePermissions, authorizeServiceCaller, assertTenant, usageContext,
     start() { cache?.startPolling(); return core; },
     close() { cache?.stop(); },
   };

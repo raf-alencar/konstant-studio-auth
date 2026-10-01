@@ -17,7 +17,18 @@ function int(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+const KNOWN_OPTIONS = new Set([
+  'service', 'platformUrl', 'platformKey', 'clerk', 'snapshot', 'pollIntervalSeconds', 'requestTimeoutMs',
+  'stepUpMaxAgeMinutes', 'acceptedCallerServices', 'serviceKeyCache', 'upgradeUrl', 'tenantResolver',
+  'onEvent', 'now', 'fetch', 'logger',
+]);
+
 function resolveConfig(opts = {}, env = process.env) {
+  // An option nobody reads is a silent hole (a stale `serviceKeys: 'stub'`, a typo in
+  // `acceptedCallerServices`): refuse it instead of ignoring it.
+  for (const key of Object.keys(opts)) {
+    if (!KNOWN_OPTIONS.has(key)) throw new ConfigError(`unknown option "${key}"`);
+  }
   const issuer = opts.clerk?.issuer ?? env.CLERK_ISSUER ?? '';
   const jwksUrl =
     opts.clerk?.jwksUrl ??
@@ -52,8 +63,14 @@ function resolveConfig(opts = {}, env = process.env) {
     pollIntervalSeconds: opts.pollIntervalSeconds ?? int(env.AUTH_EVENT_POLL_SECONDS, 5),
     requestTimeoutMs: opts.requestTimeoutMs ?? 5000,
     stepUpMaxAgeMinutes: opts.stepUpMaxAgeMinutes ?? int(env.AUTH_STEP_UP_MAX_AGE_MINUTES, 10),
-    // 'stub' until the platform's C0b2 resolves stgs_ keys; then 'platform'.
-    serviceKeys: opts.serviceKeys ?? env.AUTH_SERVICE_KEYS ?? 'stub',
+    // Catalog services whose inbound service keys (stgs_) this app accepts. Explicit configuration,
+    // never "any": with none, every service key is refused (see service-keys.js).
+    acceptedCallerServices: opts.acceptedCallerServices ?? csv(env.AUTH_ACCEPTED_CALLER_SERVICES),
+    serviceKeyCache: {
+      validTtlSeconds: opts.serviceKeyCache?.validTtlSeconds ?? 60,
+      invalidTtlSeconds: opts.serviceKeyCache?.invalidTtlSeconds ?? 10,
+      maxEntries: opts.serviceKeyCache?.maxEntries ?? 1000,
+    },
     upgradeUrl: opts.upgradeUrl ?? env.AUTH_UPGRADE_URL ?? 'https://www.konstant-studio.com/dashboard',
     tenantResolver: opts.tenantResolver ?? null,
     onEvent: opts.onEvent ?? null,

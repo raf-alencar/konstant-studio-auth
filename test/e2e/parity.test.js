@@ -75,7 +75,7 @@ test('parity with the scratch platform', async (t) => {
     const roleSlug = new Map([...real.roles, ...built.roles].map((r) => [r.id, r.slug]));
     const norm = (s) => ({
       permissions: [...s.permissions].sort((a, b) => a.action.localeCompare(b.action)),
-      tenants: s.tenants.map((x) => ({ id: x.id, type: x.type, parent_id: x.parent_id, ancestors: x.ancestors, plan: x.plan,
+      tenants: s.tenants.map((x) => ({ id: x.id, type: x.type, org_id: x.org_id, parent_id: x.parent_id, ancestors: x.ancestors, plan: x.plan,
         starts: x.starts_at ? Date.parse(x.starts_at) : null, ends: x.ends_at ? Date.parse(x.ends_at) : null })).sort((a, b) => a.id.localeCompare(b.id)),
       roles: s.roles.map((r) => ({ slug: r.slug, tenant_id: r.tenant_id, permissions: r.permissions })).sort((a, b) => (a.slug + a.tenant_id).localeCompare(b.slug + b.tenant_id)),
       memberships: s.memberships.map((m) => ({ who: m.kind === 'human' ? m.user_id : m.principal_id, kind: m.kind, tenant_id: m.tenant_id, role: roleSlug.get(m.role_id), scope: m.scope,
@@ -101,7 +101,9 @@ test('parity with the scratch platform', async (t) => {
       const { headers } = await credential(ctx, c);
       const resource = resourceOf(ctx, c);
       // The platform has no tenant resolver: the tenant an adopter's resolver would supply is stated explicitly.
-      const asked = c.ask.resolver_tenant ? { ...resource, tenant: ctx.world.id('tenant', c.ask.resolver_tenant) } : resource;
+      // ...and the tenant an org claim maps to is stated explicitly too (vector field parity_tenant).
+      const named = c.ask.resolver_tenant || c.parity_tenant;
+      const asked = named ? { ...resource, tenant: ctx.world.id('tenant', named) } : resource;
       const truth = (await platformAuthorize(ctx.state, truthBody(c, asked, headers))).body;
       assert.equal(truth.reason, exp.reason, 'the vector must state what the platform really answers');
       assert.equal(truth.allow, exp.allow);

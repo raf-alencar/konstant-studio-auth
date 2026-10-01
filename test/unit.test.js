@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const { scopeAllows } = require('../v2/decision');
-const { routeAllowed, resolveServiceKey } = require('../v2/service-keys');
+const { routeAllowed } = require('../v2/service-keys');
 const { verifySignature } = require('../v2/events-webhook');
 const { resolveConfig, ConfigError } = require('../v2/config');
 const { SnapshotCache } = require('../v2/snapshot-cache');
@@ -40,21 +40,6 @@ test('service-key route allow-list matches the platform semantics', () => {
   assert.equal(routeAllowed(['GET /a.b'], 'GET', '/aXb'), false, 'glob characters other than * are literal');
   assert.equal(routeAllowed([], 'GET', '/'), false, 'deny by default');
   assert.equal(routeAllowed(undefined, 'GET', '/'), false);
-});
-
-test('service-key stub is isolated: it denies without calling the platform', async () => {
-  let called = false;
-  await assert.rejects(resolveServiceKey('stgs_' + 'x'.repeat(30), { mode: 'stub', client: { resolve: () => { called = true; } } }), { reason: 'unsupported_credential' });
-  assert.equal(called, false);
-});
-
-test('service-key platform mode maps the amendment shape and refuses anything else', async () => {
-  const principal = { id: 'p1', kind: 'service', service: 'docs', routes: ['GET /x'] };
-  const ok = await resolveServiceKey('stgs_k', { mode: 'platform', client: { resolve: async () => ({ valid: true, principal, key_id: 'k1' }) } });
-  assert.deepEqual(ok, { id: 'p1', service: 'docs', routes: ['GET /x'], keyId: 'k1' });
-  await assert.rejects(resolveServiceKey('stgs_k', { mode: 'platform', client: { resolve: async () => ({ valid: false, reason: 'key_revoked' }) } }), { reason: 'key_revoked' });
-  await assert.rejects(resolveServiceKey('stgs_k', { mode: 'platform', client: { resolve: async () => ({ valid: true, principal: { kind: 'agent' } }) } }), { reason: 'unsupported_credential' });
-  await assert.rejects(resolveServiceKey('stgs_k', { mode: 'platform', client: { resolve: async () => { throw new PlatformUnavailable('x'); } } }), { reason: 'platform_unavailable' });
 });
 
 test('config: Clerk without authorized parties refuses to start; no hard-coded secret defaults', () => {
@@ -238,4 +223,9 @@ test('run id from the caller is bounded and printable before it reaches an audit
   assert.equal(cleanRunId('a\r\nb\u0000cé'), 'abc', 'control characters and non-ASCII are dropped (no log/header injection)');
   assert.equal(cleanRunId('x'.repeat(500)).length, 128);
   assert.equal(cleanRunId('\n\n'), undefined);
+});
+
+test('an unknown option is a startup error, not silently ignored (a stale or misspelled setting must not be a hole)', () => {
+  assert.throws(() => createAuth({ service: 'docs', serviceKeys: 'stub' }), /unknown option "serviceKeys"/);
+  assert.throws(() => createAuth({ service: 'docs', acceptedCallerService: ['image'] }), /unknown option/);
 });

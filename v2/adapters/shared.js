@@ -27,7 +27,7 @@ function denialBody(d, cfg) {
 // permission matrix grants anything.
 function legacyAuth(principal, decision) {
   return {
-    userId: principal.userId ?? principal.id ?? null,
+    userId: principal.kind === 'service' ? `service:${principal.service}` : principal.userId ?? principal.id ?? null,
     orgId: principal.claims?.org_id ?? null,
     orgRole: principal.claims?.org_role ?? null,
     isSuperadmin: false,

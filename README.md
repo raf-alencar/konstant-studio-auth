@@ -271,14 +271,31 @@ FastAPI and the Python API: see [python/README.md](./python/README.md).
 
    Offline decisions are proven equal to the platform's by the [parity test](#tests). A key is never cached, so revocation is immediate.
 4. **Fail closed.** Platform unreachable: sensitive actions and key checks → `503`; read checks are served from the cache for at most `SNAPSHOT_STALE_READ_TTL_SECONDS` (default 300), then `503`; other routine checks → `503`. A `503` means "could not decide" and carries `Retry-After`; it is never an allow.
-5. **Tenant.** Named by the `tenant` scope, else the `x-tenant` header, else your `tenantResolver(req, principal)` (use it to map a Clerk org to a tenant until the platform's snapshot carries `org_id`). With none named and several memberships the platform answers `tenant_required`. A tenant that is not a UUID can never name a tenant: it is denied (`tenant_not_found`) without calling the platform.
+5. **Tenant.** Chosen in this order: the `tenant` scope; the `x-tenant` header (it only selects: the decision still has to find the user's membership in it); your `tenantResolver(req, principal)`; then the **Clerk organization in the session token** (`org_id`, or `o.id` in Clerk's v2 token) mapped through the snapshot's `tenant.org_id`, offline. An org the user does not belong to is denied, never silently swapped for a tenant they do belong to. With none chosen and several memberships the platform answers `tenant_required`. A tenant that is not a UUID can never name a tenant: it is denied (`tenant_not_found`) without calling the platform.
 6. **Events.** `onEvent(e)` receives one `auth.decision` event per check (ids and the decision only — never a token, header or key). `usageContext(req)` gives the actor for usage events (event contract: "Usage ledger design").
 
 Responses: `401 {error, reason}` for a credential problem, `403 {error, reason}` for a decision (`not_entitled` adds `upgrade_url`), `503` when it could not decide.
 
-### Service keys (`stgs_`) — status
+### Inbound service keys (`stgs_`) and effective permissions
 
-The end state is that the platform resolves a service key into a `service` principal (`{kind:'service', service, routes, tenant:null}`: denied by default for every tenant-scoped permission, never an approver, only the routes on its allow-list). The platform's C0b2 change that does this has not landed; until it does, `service-keys.js` is a **stub that answers `401 unsupported_credential`**, exactly like the platform. Switch with `serviceKeys: 'platform'` / `AUTH_SERVICE_KEYS=platform` after C0b2 is accepted. The matching vectors are marked `pending-platform`.
+Another internal service calling this app presents a `stgs_` key. The platform resolves it into a `service` principal (platform C0b2). What the library does with it, per the CoS contract note:
+
+- **Configuration, not discovery.** The app declares `acceptedCallerServices: ['image', 'video']`; the library passes each as `expect_service` (mandatory on the platform for a bound caller; never "any"). With none declared, every service key is refused without asking the platform. Your own key (`PLATFORM_SERVICE_KEY`) must be **bound to your catalog service**: the platform refuses a slug-less caller.
+- **Uniform failure.** Unknown, revoked, expired, disabled, wrong-service and unaccepted keys all give `401 key_not_found`; the finer reason is the platform's audit detail and is never branched on, returned or logged.
+- **A match proves who is calling, not what they may do on your routes.** The `allowed_routes` the platform returns are routes on the *platform's* API and are deliberately not exposed on the Principal. You write your own policy per accepted caller service (deny by default; `* /*` is refused):
+
+```js
+const auth = createAuth({ service: 'docs', acceptedCallerServices: ['image', 'video'] });
+app.use('/internal', auth.express.requireServiceCaller({
+  image: ['POST /internal/render', 'GET /internal/status/*'],
+  video: ['GET /internal/status/*'],
+}));
+// Next.js: auth.next.withServiceCaller(policy, handler)   FastAPI: Depends(auth.require_service_caller(policy))
+```
+- **No tenant permissions.** `requirePermission` for a service principal is denied (`service_principal_not_granted`, the platform's own answer). A tenant is not part of a service principal; platform-side grants between services are a later design.
+- **Cache.** A valid resolution is kept for at most 60 s, an invalid one for at most 10 s, keyed by a hash of the credential (never the credential), bounded in size. The platform audits every uncached resolution; the cache keeps that volume sane. The trade-off: a revoked service key can keep working here for up to a minute (agent, guest and MCP keys are never cached).
+
+**Effective permissions** (`auth.effectivePermissions({ headers, tenant, service })`) returns what the platform says a principal may do in a tenant, computed by the same code path as `/v1/authorize`, with `permits(permission, {brand, domain, mailbox})` applying its documented rule (allowed iff *some* scope entry admits the resource). Use it to decide what to show or list; it is information, not a gate (enforcement is `requirePermission`). A parity test checks `permits` against `/v1/authorize` over the vectors.
 
 ### Environment
 
@@ -293,7 +310,7 @@ The end state is that the platform resolves a service key into a `service` princ
 | `SNAPSHOT_TTL_SECONDS` / `SNAPSHOT_STALE_READ_TTL_SECONDS` | Cache lifetime / how long reads survive a platform outage (defaults 30 / 300; the snapshot's own values win). |
 | `AUTH_EVENT_POLL_SECONDS` | Change-feed poll interval (default 5; `0` disables). |
 | `AUTH_STEP_UP_MAX_AGE_MINUTES` | Max age of the second factor for `stepUp` (default 10). |
-| `AUTH_SERVICE_KEYS` | `stub` (default) or `platform`. |
+| `AUTH_ACCEPTED_CALLER_SERVICES` | Comma-separated catalog services whose inbound `stgs_` keys this app accepts (or `acceptedCallerServices`). Empty = refuse every service key. |
 
 Step-up reads Clerk's `fva` session claim (`[minutes since first factor, minutes since second]`, `-1` = none). **Not yet confirmed against this Clerk instance's token shape**: if `fva` is absent, step-up is denied, never assumed.
 
