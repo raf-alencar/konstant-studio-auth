@@ -27,7 +27,9 @@ function expressAdapter(core) {
     try {
       const resource = await resolveScope(scope, req);
       // The x-tenant header is only a HINT, the weakest source of the tenant (see selectTenant).
-      if (req.headers['x-tenant']) resource.tenantHint = String(req.headers['x-tenant']);
+      // (a repeated header arrives joined with ", ": ambiguous, so no hint at all)
+      const hint = req.headers['x-tenant'];
+      if (hint && !String(hint).includes(',')) resource.tenantHint = String(hint);
       const requestId = cleanRunId(req.headers['x-run-id']);
       const args = { headers: req.headers, permission, resource, req, requestId };
       const d = approver ? await core.authorizeApprover({ ...args, stepUp }) : await core.authorize(args);

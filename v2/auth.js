@@ -180,15 +180,20 @@ function createAuth(opts = {}) {
   // ---- decisions ------------------------------------------------------------
 
   // Which tenant is this request about, and where did that come from? In order:
-  //   1. `explicit`: the route's own tenant scope. Always wins.
-  //   2. the adopter's tenantResolver, then
-  //   3. the Clerk organization in the session token, mapped through the snapshot's tenant.org_id;
-  //   4. `hint`: the x-tenant header, the weakest source, used only when nothing above named a tenant.
-  // So a token whose org maps to a tenant is not moved to another by a header. The mapping is identity,
-  // not authority: whatever comes out, the decision still has to find the user's membership in it (an
-  // org the user does not belong to is denied, never silently swapped for one they do).
+  //   1. `explicit`: the route's own tenant scope (app code). Always wins.
+  //   2. the adopter's tenantResolver (app code);
+  //   3. for a Clerk session that carries an ORG: the tenant that org maps to through the snapshot's
+  //      tenant.org_id, and nothing else. If the org does not map (its tenant is not in the snapshot, the
+  //      snapshot is unavailable, or there is no snapshot) the answer is "no tenant" (tenant_required), or
+  //      "could not decide" when the snapshot is simply unavailable. NEVER the header: a token's org
+  //      cannot be moved to another tenant by anything the client sends;
+  //   4. `hint` (the x-tenant header), the weakest source, only for a principal with no org claim to
+  //      contradict it (agency, superadmin and multi-tenant users, and keys).
+  // The mapping is identity, not authority: whatever comes out, the decision still has to find the user's
+  // membership in it (an org the user does not belong to is denied, never swapped for one they do).
   // Steps 2 and 3 run only for a principal this library has itself verified (a Clerk session): never
   // app code or cache work on behalf of a credential the platform has not yet confirmed.
+  // -> { tenant, source } | { unavailable: true } | { orgUnmapped: true }
   async function selectTenant(explicit, hint, principal, req) {
     if (explicit) return { tenant: explicit, source: 'explicit' }; // '' is no tenant
     if (principal.source === 'clerk' && principal.kind === 'human') {
@@ -197,10 +202,12 @@ function createAuth(opts = {}) {
         if (t) return { tenant: t, source: 'resolver' };
       }
       const orgId = principal.claims?.org_id;
-      if (orgId && cache) {
+      if (orgId) {
+        if (!cache) return { orgUnmapped: true }; // no service configured, so no snapshot to map through
         const snap = await cache.get(); // a stale snapshot is fine here: it only names a tenant
-        const mapped = snap.state !== 'none' ? snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id : undefined;
-        if (mapped) return { tenant: mapped, source: 'org' };
+        if (snap.state === 'none') return { unavailable: true };
+        const mapped = snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id;
+        return mapped ? { tenant: mapped, source: 'org' } : { orgUnmapped: true };
       }
     }
     return hint ? { tenant: hint, source: 'hint' } : { tenant: null, source: null };
@@ -262,6 +269,8 @@ function createAuth(opts = {}) {
       }
 
       const picked = await selectTenant(resource.tenant, resource.tenantHint, principal, req);
+      if (picked.unavailable) return result({ allow: false, reason: 'platform_unavailable', principal });
+      if (picked.orgUnmapped) return result({ allow: false, reason: 'tenant_required', principal });
       const tenant = picked.tenant;
       // The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name a
       // tenant: answer it here as a denial instead of sending it on and reporting the platform's 422
@@ -347,7 +356,16 @@ function createAuth(opts = {}) {
   // mailboxes present must contain the request's brand / domain / mailbox, case-insensitive; an
   // absent key is unrestricted; an unknown key admits nothing). This is information, not a gate:
   // enforcement is authorize(), which asks the platform (or the parity-tested snapshot) per request.
-  async function effectivePermissions({ headers, credential, tenant, service, req } = {}) {
+  async function effectivePermissions(args = {}) {
+    try {
+      return await effectivePermissionsUnsafe(args);
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} while computing effective permissions`);
+      return { ok: false, reason: 'platform_unavailable', status: 503 };
+    }
+  }
+
+  async function effectivePermissionsUnsafe({ headers, credential, tenant, service, req } = {}) {
     const cred = credential ?? extract(headers);
     const found = await principalFrom(cred);
     if (found.denied) return { ok: false, reason: found.denied, status: statusFor(found.denied, false) };
@@ -355,7 +373,10 @@ function createAuth(opts = {}) {
     const none = (reason, extra = {}) => ({ ok: true, principal, tenantId: null, reason, permissions: [], permits: () => false, ...extra });
     if (principal.kind === 'service') return none('service_principal_not_granted');
 
-    const chosen = (await selectTenant(tenant, undefined, principal, req)).tenant;
+    const picked = await selectTenant(tenant, undefined, principal, req);
+    if (picked.unavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
+    if (picked.orgUnmapped) return none('tenant_required');
+    const chosen = picked.tenant;
     if (chosen && !UUID_RE.test(String(chosen))) return none('tenant_not_found');
     const body = {
       include_effective: true,

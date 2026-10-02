@@ -17,6 +17,12 @@ from ..service_keys import validate_policy
 from .shared import clean_run_id, denial_body, legacy_auth, resolve_scope
 
 
+def _header_list(request, name):
+    h = request.headers
+    getlist = getattr(h, "getlist", None)
+    return list(getlist(name)) if getlist else ([h[name]] if name in h else [])
+
+
 def _raw_path(request):
     """ASGI's `raw_path` is the request target as sent (percent-escapes intact); `url.path` is decoded.
     Policy matching must see the former. Falls back to the decoded path (which the policy then refuses
@@ -43,8 +49,10 @@ def fastapi_adapter(core):
         try:
             resource = await resolve_scope(scope, request)
             # The x-tenant header is only a HINT, the weakest source of the tenant (see Auth._select_tenant).
-            if request.headers.get("x-tenant"):
-                resource["tenant_hint"] = request.headers["x-tenant"]
+            # (a repeated header, or one joined with a comma, is ambiguous: no hint at all)
+            hints = _header_list(request, "x-tenant")
+            if len(hints) == 1 and hints[0] and "," not in hints[0]:
+                resource["tenant_hint"] = hints[0]
             request_id = clean_run_id(request.headers.get("x-run-id"))
             args = dict(headers=request.headers, permission=permission, resource=resource, request=request, request_id=request_id)
             d = await core.authorize_approver(step_up=step_up, **args) if approver else await core.authorize(**args)
@@ -117,7 +125,8 @@ def fastapi_adapter(core):
             if core.cache:
                 core.cache.invalidate()
                 # best effort: the next check revalidates anyway
-                task = asyncio.ensure_future(core.cache.refresh())
+                # fresh: a request already in flight started BEFORE this change, so wait for it and ask again.
+                task = asyncio.ensure_future(core.cache.refresh(fresh=True))
                 task.add_done_callback(lambda t: t.cancelled() or t.exception())
             return {"received": True}
 

@@ -38,6 +38,8 @@ def resource_for(c, world):
     ask = c["ask"]
     if ask.get("tenant"):
         r["tenant"] = world.id("tenant", ask["tenant"])
+    if ask.get("tenant_hint"):
+        r["tenant_hint"] = world.id("tenant", ask["tenant_hint"])  # the x-tenant header: the weakest source
     if ask.get("tenant_raw"):
         r["tenant"] = ask["tenant_raw"]
     for f in ("brand", "domain", "mailbox"):

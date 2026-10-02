@@ -288,30 +288,33 @@ class Auth:
     async def _select_tenant(self, explicit, hint, principal, request):
         """Which tenant is this request about, and where did that come from? In order:
           1. `explicit`: the route's own tenant scope. Always wins.
-          2. the adopter's tenant_resolver, then
-          3. the Clerk organization in the session token, mapped through the snapshot's tenant.org_id;
-          4. `hint`: the x-tenant header, the weakest source, used only when nothing above named a tenant.
-        So a token whose org maps to a tenant is not moved to another by a header. The mapping is identity,
-        not authority: whatever comes out, the decision still has to find the user's membership in it (an
-        org the user does not belong to is denied, never silently swapped for one they do).
-        Steps 2 and 3 run only for a principal this library has itself verified (a Clerk session): never
-        app code or cache work on behalf of a credential the platform has not yet confirmed.
-        -> (tenant, source)"""
+          2. the adopter's tenant_resolver (app code, not client input);
+          3. a token that carries a Clerk org claim: the tenant that org maps to in the snapshot, and ONLY
+             that. No snapshot to map through, or an org that does not map, is "no tenant" (tenant_required);
+             a snapshot that cannot be read is "could not decide". The header is NEVER a fallback here, or a
+             client could move a token off its org's tenant by making the org unmappable;
+          4. `hint`: the x-tenant header, the weakest source: only for a principal with no org claim (agency,
+             superadmin, multi-tenant users) and for non-Clerk principals.
+        The mapping is identity, not authority: the decision still has to find the user's membership in
+        whatever tenant comes out. Steps 2 and 3 run only for a locally verified Clerk session.
+        -> {"tenant", "source"} | {"unavailable": True} | {"org_unmapped": True}"""
         if explicit:
-            return explicit, "explicit"  # '' is no tenant
+            return {"tenant": explicit, "source": "explicit"}  # '' is no tenant
         if principal.source == "clerk" and principal.kind == "human":
             if self.config.tenant_resolver:
                 t = (await _maybe_await(self.config.tenant_resolver(request, principal))) or None
                 if t:
-                    return t, "resolver"
+                    return {"tenant": t, "source": "resolver"}
             org_id = (principal.claims or {}).get("org_id")
-            if org_id and self.cache:
+            if org_id:
+                if not self.cache:
+                    return {"org_unmapped": True}  # no service configured, so no snapshot to map through
                 snap = await self.cache.get()  # a stale snapshot is fine here: it only names a tenant
-                if snap.state != "none":
-                    mapped = next((t["id"] for t in snap.snapshot["tenants"] if t.get("org_id") == org_id), None)
-                    if mapped:
-                        return mapped, "org"
-        return (hint, "hint") if hint else (None, None)
+                if snap.state == "none":
+                    return {"unavailable": True}
+                mapped = next((t["id"] for t in snap.snapshot["tenants"] if t.get("org_id") == org_id), None)
+                return {"tenant": mapped, "source": "org"} if mapped else {"org_unmapped": True}
+        return {"tenant": hint, "source": "hint"} if hint else {"tenant": None, "source": None}
 
     async def _live(self, cred, principal, parsed, resource):
         resource_body = {}
@@ -375,7 +378,12 @@ class Auth:
             if principal.kind == "service":
                 return Result(False, "service_principal_not_granted", principal=principal)
 
-            tenant, tenant_source = await self._select_tenant(resource.get("tenant"), resource.get("tenant_hint"), principal, request)
+            picked = await self._select_tenant(resource.get("tenant"), resource.get("tenant_hint"), principal, request)
+            if picked.get("unavailable"):
+                return Result(False, "platform_unavailable", principal=principal)
+            if picked.get("org_unmapped"):
+                return Result(False, "tenant_required", principal=principal)
+            tenant, tenant_source = picked["tenant"], picked["source"]
             # The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name
             # a tenant: answer it here as a denial instead of sending it on and reporting the platform's
             # 422 as an outage (a client mistake must not look like platform_unavailable).
@@ -441,7 +449,16 @@ class Auth:
             res = res.evolve(allow=False, reason="step_up_required")
         return self._audited(res, permission, request_id)
 
-    async def effective_permissions(self, headers=None, credential=None, tenant=None, service=None, request=None):
+    async def effective_permissions(self, **kwargs):
+        try:
+            return await self._effective_permissions(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - informational: degrade to a 503, never raise
+            self.config.logger.error(f"auth: unexpected {type(err).__name__} while computing effective permissions")
+            return EffectiveResult(False, reason="platform_unavailable", status=503)
+
+    async def _effective_permissions(self, headers=None, credential=None, tenant=None, service=None, request=None):
         """What the platform says this principal may do in a tenant (POST /v1/principals/resolve with
         include_effective), computed by the same code path as /v1/authorize, so a caller (a UI deciding
         which buttons to show, a service listing what an agent can reach) need not re-implement the rules.
@@ -458,7 +475,12 @@ class Auth:
 
         if principal.kind == "service":
             return none("service_principal_not_granted")
-        chosen = (await self._select_tenant(tenant, None, principal, request))[0]
+        picked = await self._select_tenant(tenant, None, principal, request)
+        if picked.get("unavailable"):
+            return EffectiveResult(False, reason="platform_unavailable", status=503)
+        if picked.get("org_unmapped"):
+            return none("tenant_required")
+        chosen = picked["tenant"]
         if chosen and not _UUID_RE.fullmatch(str(chosen)):
             return none("tenant_not_found")
         body = {"include_effective": True}

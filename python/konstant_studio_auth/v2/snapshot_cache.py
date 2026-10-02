@@ -23,9 +23,10 @@ class SnapshotView:
 
 
 class _Entry:
-    __slots__ = ("body", "etag", "fetched_at")
+    __slots__ = ("body", "etag", "fetched_at", "invalidated")
 
     def __init__(self, body, etag, fetched_at):
+        self.invalidated = False
         self.body = body
         self.etag = etag
         self.fetched_at = fetched_at
@@ -63,7 +64,7 @@ class SnapshotCache:
         stale: past the TTL, platform unreachable, still inside the stale-read window
         none:  nothing usable (never loaded, or older than the stale-read window)
         """
-        if self.entry and self.now() - self.entry.fetched_at < self._ttl_ms():
+        if self.entry and not self.entry.invalidated and self.now() - self.entry.fetched_at < self._ttl_ms():
             return self._view("fresh")
         # After a failed refresh, do not make every request wait out a timeout:
         # go straight to the stale/none answer for a moment.
@@ -111,6 +112,7 @@ class SnapshotCache:
         res = await self.client.snapshot(self.service, self.entry.etag if self.entry else None)
         if res.get("not_modified") and self.entry:
             self.entry.fetched_at = self.now()
+            self.entry.invalidated = False
             return
         if res.get("not_modified"):
             raise PlatformUnavailable("304 without a cached snapshot")
@@ -132,8 +134,11 @@ class SnapshotCache:
         return False
 
     def invalidate(self):
+        """Mark the cached snapshot as needing revalidation now. A flag, not "fetched_at = 0": that does
+        nothing against a monotonic clock that has not yet run for a full TTL. If the revalidation fails
+        the entry is still served as stale inside the stale-read window, as for any expired entry."""
         if self.entry:
-            self.entry.fetched_at = 0
+            self.entry.invalidated = True
 
     def start_polling(self):
         if self._task or not self.poll_interval_seconds:

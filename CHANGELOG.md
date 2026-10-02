@@ -4,6 +4,12 @@ Semantic versioning. v1 exports are never removed in a minor release; they are d
 
 ## 0.2.0 — control-plane authorization (v2)
 
+### Final fixes (CoS verdict 2, on 13ae0c4)
+- **R1 closed:** a token that carries an org claim never uses the `x-tenant` header: an unmapped org is `tenant_required` (or `503` when the snapshot cannot be read), not a fallback to the header. The header remains a hint only for tokens with no org claim and for keys. A repeated `x-tenant` header is ignored.
+- List options (`authorizedParties`, `audience`, `acceptedCallerServices`) must be arrays of non-empty strings in both languages.
+- The signed change webhook asks for a fresh refresh, and `invalidate()` really expires the cached snapshot (it was a no-op against the monotonic clock early in the process life).
+- Globs: `*` and `**` need at least one character (`GET /internal/*` no longer authorises `/internal` or `/internal/`); `;`, backslashes, Unicode line separators and single-dot segments are refused; `@clerk/express` and `svix` pinned; a malformed resolve reply is "could not decide", never cached as an invalid key; `effectivePermissions` degrades to a 503 instead of throwing.
+
 ### Security review fixes (CoS review of 011275b)
 - **R1** `x-tenant` is only a hint (last in the tenant order) so a header cannot move a token off its org's tenant; v2's `req.auth` drops `orgId`/`orgRole` (they invited scoping data by the token's org) and gains `tenantId` (the only scoping key), `clerkOrgId`, `clerkOrgRole`. Audit events carry `tenant_source`.
 - **R2** Service-key resolutions: key-shape check before any platform call; LRU valid cache plus a separate small invalid cache (garbage cannot flush good entries); a cap on in-flight resolutions; a platform 429 pauses resolution instead of becoming a verdict; nonsensical numeric options are startup errors in both languages.

@@ -117,6 +117,8 @@ def _resource(ctx, c):
     for f in ("brand", "domain", "mailbox"):
         if c["ask"].get(f):
             r[f] = c["ask"][f]
+    if c["ask"].get("tenant_hint"):
+        r["tenant_hint"] = ctx.world.id("tenant", c["ask"]["tenant_hint"])  # the x-tenant header
     return r
 
 
@@ -127,7 +129,7 @@ def _truth_body(c, resource, headers):
         kind, raw = "credential", headers.get("x-api-key")
     service, action = c["ask"]["permission"].split(":")
     wire = {"tenant": "tenant_id", "brand": "brand_id", "domain": "domain", "mailbox": "mailbox"}
-    return {kind: raw, "service": service, "action": action, "resource": {wire[k]: v for k, v in resource.items() if v}}
+    return {kind: raw, "service": service, "action": action, "resource": {wire[k]: v for k, v in resource.items() if v and k in wire}}
 
 
 @pytest.mark.parametrize("c", _cases())

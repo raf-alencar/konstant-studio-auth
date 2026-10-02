@@ -136,7 +136,9 @@ class ServiceKeyResolver:
                 if isinstance(err, PlatformThrottled):
                     self.throttled_until = self.monotonic() + err.retry_after_ms
                 raise Denied("platform_unavailable") from None  # not cached: not a verdict
-            p = res.get("principal") if isinstance(res, dict) else None
+            if not isinstance(res, dict) or res.get("valid") not in (True, False) or not isinstance(res.get("valid"), bool):
+                raise Denied("platform_unavailable")  # a malformed reply is not a verdict: never cached
+            p = res.get("principal")
             # Check the answer ourselves too: it must be a service principal bound to exactly the service we asked about.
             # (valid is True, not truthy: a string like "false" must never read as a yes.)
             if isinstance(p, dict) and res.get("valid") is True and p.get("kind") == "service" and p.get("service") == slug:
@@ -177,14 +179,16 @@ class ServiceKeyResolver:
 # one that does not start with `/`. Decoded or normalised matching is how `/internal/..%2fadmin`
 # gets past a policy written for `/internal/*`.
 _GLOBS = {}
-_UNSAFE = re.compile(r"[\x00-\x1f\x7f%]")
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f%;\\\u2028\u2029]")
 
 
 def _compile_glob(glob):
+    # `*` is one or more non-slash characters and `**` one or more of anything: an explicit negated class and
+    # (?s:.) rather than a bare `.`, so no pattern depends on what a regex dot refuses (line separators).
     pat = _GLOBS.get(glob)
     if pat is None:
-        body = ".*".join("[^/]*".join(re.escape(lit) for lit in part.split("*")) for part in glob.split("**"))
-        pat = _GLOBS[glob] = re.compile(body, re.DOTALL)
+        body = "(?s:.)+".join("[^/]+".join(re.escape(lit) for lit in part.split("*")) for part in glob.split("**"))
+        pat = _GLOBS[glob] = re.compile(body)
     return pat
 
 
@@ -192,7 +196,11 @@ def safe_path(path):
     if not isinstance(path, str):
         return None
     p = re.split(r"[?#]", path, maxsplit=1)[0]
+    # Anything that could be read two ways: %, '..', '//', control characters, ';' path parameters, backslashes
+    # (treated as '/' by some servers), the Unicode line separators, and a single-dot segment.
     if p[:1] != "/" or _UNSAFE.search(p) or ".." in p or "//" in p:
+        return None
+    if "." in p.split("/"):
         return None
     return p
 
@@ -226,6 +234,8 @@ def validate_policy(policy, accepted):
         for r in routes:
             if not isinstance(r, str) or not _ROUTE_ENTRY.fullmatch(r):
                 raise ConfigError(f'bad route entry "{r}" for "{service}"')
+            if re.search(r"[;\\]", r) or r.count("**") > 2:
+                raise ConfigError(f"route entry \"{r}\" for \"{service}\" uses ';', a backslash, or more than two '**'")
             if ".." in r or "//" in r:
                 raise ConfigError(f'route entry "{r}" for "{service}" contains ".." or "//"')
             if r in ("* /*", "* /**"):

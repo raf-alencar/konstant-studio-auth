@@ -111,6 +111,7 @@ class ServiceKeyResolver {
         if (err instanceof PlatformUnavailable) throw new Denied('platform_unavailable'); // not cached: not a verdict
         throw err;
       }
+      if (res?.valid !== true && res?.valid !== false) throw new Denied('platform_unavailable'); // a malformed reply is not a verdict: never cached
       const p = res?.principal;
       // Check the answer ourselves too: it must be a service principal bound to exactly the service we asked about.
       // (valid === true, not truthy: a string like "false" must never read as a yes.)
@@ -150,7 +151,9 @@ class ServiceKeyResolver {
 // "METHOD /path/glob" entries; METHOD may be `*`.
 // THIS app's own policy for the routes of this app (never the platform's `allowed_routes`), and
 // deliberately stricter than the platform's glob:
-//   *   matches within ONE path segment (never a "/");   **  matches across segments.
+//   *   matches within ONE path segment (never a "/", and at least one character);
+//   **  matches across segments (at least one character).
+//   So `GET /internal/*` authorises neither `/internal` nor `/internal/`.
 // It is matched against the path exactly as it was SENT (undecoded, without the query string), and a
 // path that could be read two ways is refused outright: any `%`, `..`, `//`, control character, or
 // one that does not start with `/`. Decoded or normalised matching is how `/internal/..%2fadmin`
@@ -162,8 +165,8 @@ function compileGlob(glob) {
   if (!re) {
     const body = glob
       .split('**')
-      .map((part) => part.split('*').map((lit) => lit.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*'))
-      .join('.*');
+      .map((part) => part.split('*').map((lit) => lit.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]+'))
+      .join('.+');
     re = new RegExp(`^${body}$`);
     globCache.set(glob, re);
   }
@@ -173,7 +176,10 @@ function compileGlob(glob) {
 function safePath(path) {
   if (typeof path !== 'string') return null;
   const p = path.split(/[?#]/)[0];
-  if (p[0] !== '/' || /[\x00-\x1f\x7f%]/.test(p) || p.includes('..') || p.includes('//')) return null;
+  // Anything that could be read two ways: %, '..', '//', control characters, ';' path parameters, backslashes
+  // (treated as '/' by some servers), the Unicode line separators, and a single-dot segment.
+  if (p[0] !== '/' || /[\x00-\x1f\x7f%;\\\u2028\u2029]/.test(p) || p.includes('..') || p.includes('//')) return null;
+  if (p.split('/').includes('.')) return null;
   return p;
 }
 
@@ -201,6 +207,7 @@ function validatePolicy(policy, accepted) {
     if (!Array.isArray(routes)) throw new Error(`service caller policy for "${service}" must be a list of "METHOD /path" entries`);
     for (const r of routes) {
       if (!/^(GET|POST|PUT|PATCH|DELETE|\*) \/[A-Za-z0-9_\-./*:]*$/.test(r)) throw new Error(`bad route entry "${r}" for "${service}"`);
+      if (/[;\\]/.test(r) || (r.match(/\*\*/g) || []).length > 2) throw new Error(`route entry "${r}" for "${service}" uses ';', a backslash, or more than two '**'`);
       if (r.includes('..') || r.includes('//')) throw new Error(`route entry "${r}" for "${service}" contains ".." or "//"`);
       if (r === '* /*' || r === '* /**') throw new Error(`"* /*" for "${service}" would allow everything: list the routes this caller needs`);
     }

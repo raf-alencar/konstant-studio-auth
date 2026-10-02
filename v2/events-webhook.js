@@ -32,7 +32,8 @@ function eventsWebhookHandler(core, { secret }) {
     });
     if (!ok) return res.status(401).json({ error: 'Invalid signature' });
     core.cache?.invalidate();
-    core.cache?.refresh().catch(() => {}); // best effort: the next check revalidates anyway
+    // fresh: a request already in flight started BEFORE this change, so wait for it and ask again.
+    core.cache?.refresh({ fresh: true }).catch(() => {}); // best effort: the next check revalidates anyway
     return res.json({ received: true });
   };
 }

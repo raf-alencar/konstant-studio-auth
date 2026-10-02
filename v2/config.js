@@ -31,6 +31,15 @@ function positive(name, value, { integer = false, allowZero = false } = {}) {
   return value;
 }
 
+// A string where a list belongs is a silent hole: `'abc'.includes('')` is true in JS (an empty `azp`
+// would pass an "allowed parties" string), and other languages split a string into characters.
+function stringList(name, value) {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || v.trim() === '')) {
+    throw new ConfigError(`${name} must be an array of non-empty strings (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
 function resolveConfig(opts = {}, env = process.env) {
   // An option nobody reads is a silent hole (a stale `serviceKeys: 'stub'`, a typo in
   // `acceptedCallerServices`): refuse it instead of ignoring it.
@@ -42,8 +51,8 @@ function resolveConfig(opts = {}, env = process.env) {
     opts.clerk?.jwksUrl ??
     env.CLERK_JWKS_URL ??
     (issuer ? `${issuer.replace(/\/+$/, '')}/.well-known/jwks.json` : '');
-  const authorizedParties = opts.clerk?.authorizedParties ?? csv(env.CLERK_AUTHORIZED_PARTIES);
-  const audience = opts.clerk?.audience ?? csv(env.CLERK_AUDIENCE);
+  const authorizedParties = stringList('clerk.authorizedParties', opts.clerk?.authorizedParties ?? csv(env.CLERK_AUTHORIZED_PARTIES));
+  const audience = stringList('clerk.audience', opts.clerk?.audience ?? csv(env.CLERK_AUDIENCE));
 
   // Same rule as the platform: without a list of allowed `azp` origins, any
   // token this Clerk instance ever issued (for any of its apps) would be
@@ -73,7 +82,7 @@ function resolveConfig(opts = {}, env = process.env) {
     stepUpMaxAgeMinutes: positive('stepUpMaxAgeMinutes', opts.stepUpMaxAgeMinutes ?? int(env.AUTH_STEP_UP_MAX_AGE_MINUTES, 10)),
     // Catalog services whose inbound service keys (stgs_) this app accepts. Explicit configuration,
     // never "any": with none, every service key is refused (see service-keys.js).
-    acceptedCallerServices: opts.acceptedCallerServices ?? csv(env.AUTH_ACCEPTED_CALLER_SERVICES),
+    acceptedCallerServices: stringList('acceptedCallerServices', opts.acceptedCallerServices ?? csv(env.AUTH_ACCEPTED_CALLER_SERVICES)),
     serviceKeyCache: {
       validTtlSeconds: positive('serviceKeyCache.validTtlSeconds', opts.serviceKeyCache?.validTtlSeconds ?? 60),
       invalidTtlSeconds: positive('serviceKeyCache.invalidTtlSeconds', opts.serviceKeyCache?.invalidTtlSeconds ?? 10),

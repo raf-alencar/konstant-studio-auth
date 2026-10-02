@@ -35,7 +35,8 @@ function nextAdapter(core) {
 
   async function authorizeRequestUnsafe(request, permission, scope, ctx, opts) {
     const resource = await resolveScope(scope, request, ctx);
-    if (request.headers.get('x-tenant')) resource.tenantHint = request.headers.get('x-tenant');
+    const hint = request.headers.get('x-tenant');
+    if (hint && !hint.includes(',')) resource.tenantHint = hint; // a repeated header arrives joined: ambiguous, no hint
     const args = {
       headers: request.headers, permission, resource, req: request,
       requestId: cleanRunId(request.headers.get('x-run-id')),

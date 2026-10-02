@@ -505,3 +505,157 @@ def test_a_repeated_credential_header_is_a_clean_401(build, world):
         assert (r.status_code, r.json()["detail"]["reason"]) == (401, "token_invalid")
         r = c.get("/x", headers={"cookie": "__session=aaaa%E0%A4%A.bbbb.cccc"})
         assert (r.status_code, r.json()["detail"]["reason"]) == (401, "token_invalid")
+
+
+# ---- V2-*: the second CoS review (13ae0c4) --------------------------------------------------------------
+
+
+async def test_v2_1_with_an_org_claim_the_header_is_never_a_fallback(make_harness, world, clerk_keys):
+    # no service => no snapshot to map through
+    h = make_harness(service="", separate_monotonic=True)
+    tok = mint_clerk_token(clerk_keys, "user_bob", h.now(), ISS, AZP, {"extra": {"org_id": "org_acme"}})
+    d = await h.auth.authorize(headers={"authorization": f"Bearer {tok}"}, permission="docs:read", resource={"tenant_hint": world.id("tenant", "globex")})
+    assert (d.allow, d.reason, d.source) == (False, "tenant_required", "none")
+    assert h.fake.count("POST", "/v1/authorize") == 0, "not sent on to the platform with the header either"
+
+
+async def test_v2_1_explicit_and_resolver_still_win_over_an_org_claim(build, world):
+    globex, acme = world.id("tenant", "globex"), world.id("tenant", "acme")
+    h = build(tenant_resolver=lambda req, p: globex)
+    hd = h.bearer("bob", {"extra": {"org_id": "org_dormant"}})  # an org that does not map
+    via_resolver = await h.auth.authorize(headers=hd, permission="docs:read")
+    assert (via_resolver.allow, via_resolver.tenant_id, via_resolver.tenant_source) == (True, globex, "resolver")
+    explicit = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant": acme})
+    assert (explicit.tenant_id, explicit.tenant_source) == (acme, "explicit")
+
+
+async def test_v2_1_unmapped_org_is_tenant_required_and_an_unreadable_snapshot_is_503(build, world):
+    h = build()
+    d = await h.auth.authorize(headers=h.bearer("alice", {"extra": {"org_id": "org_dormant"}}), permission="docs:read",
+                               resource={"tenant_hint": world.id("tenant", "globex")})
+    assert (d.allow, d.reason, d.status, d.source) == (False, "tenant_required", 403, "none")
+    cold = build()
+    cold.fake.down = True
+    d = await cold.auth.authorize(headers=cold.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read",
+                                  resource={"tenant_hint": world.id("tenant", "globex")})
+    assert (d.allow, d.reason, d.status) == (False, "platform_unavailable", 503)
+
+
+async def test_v2_1_effective_permissions_follow_the_same_rule(build):
+    h = build()
+    unmapped = await h.auth.effective_permissions(headers=h.bearer("alice", {"extra": {"org_id": "org_dormant"}}))
+    assert (unmapped.ok, unmapped.reason, unmapped.permissions) == (True, "tenant_required", [])
+    cold = build()
+    cold.fake.down = True
+    r = await cold.auth.effective_permissions(headers=cold.bearer("bob", {"extra": {"org_id": "org_acme"}}))
+    assert (r.ok, r.reason, r.status) == (False, "platform_unavailable", 503)
+
+
+def test_v2_2_list_options_must_be_lists_of_non_empty_strings():
+    def clerk(**o):
+        return {"issuer": "https://c.test", "jwks_url": "http://j.test", "authorized_parties": ["https://a.test"], **o}
+
+    for bad in ({"authorized_parties": "https://a.test"}, {"authorized_parties": [""]}, {"authorized_parties": ["  "]},
+                {"authorized_parties": [1]}, {"audience": "x"}, {"audience": [""]}):
+        with pytest.raises(ConfigError):
+            create_auth(service="docs", logger=SilentLogger(), env={}, clerk=clerk(**bad))
+    for bad in ("image", [""], [1], [None], "image,video"):
+        with pytest.raises(ConfigError):
+            create_auth(service="docs", logger=SilentLogger(), env={}, accepted_caller_services=bad)
+    create_auth(service="docs", logger=SilentLogger(), env={}, clerk=clerk(audience=[]), accepted_caller_services=[])
+
+
+async def test_v2_3_invalidate_really_expires_a_cached_snapshot_even_in_the_first_seconds(build):
+    h = build()
+    await h.auth.cache.get()
+    n = h.fake.count("GET", "/v1/authorize/snapshot")
+    await h.auth.cache.get()
+    assert h.fake.count("GET", "/v1/authorize/snapshot") == n, "fresh before"
+    h.auth.cache.invalidate()  # the monotonic clock is at 0 here: fetched_at = 0 would have expired nothing
+    await h.auth.cache.get()
+    assert h.fake.count("GET", "/v1/authorize/snapshot") == n + 1, "revalidated at once after invalidate"
+    await h.auth.cache.get()
+    assert h.fake.count("GET", "/v1/authorize/snapshot") == n + 1, "and fresh again afterwards (the flag clears)"
+
+
+async def test_v2_3_an_invalidated_snapshot_whose_revalidation_fails_is_served_stale(build):
+    h = build()
+    await h.auth.cache.get()
+    h.auth.cache.invalidate()
+    h.fake.down = True
+    assert (await h.auth.cache.get()).state == "stale"
+
+
+def test_v2_3_the_signed_webhook_asks_for_a_fresh_refresh(build):
+    import hashlib
+    import hmac
+    import time
+
+    h = build()
+    calls = []
+
+    async def refresh(fresh=False):
+        calls.append({"fresh": fresh})
+
+    h.auth.cache.refresh = refresh
+    h.auth.cache.invalidate = lambda: calls.append("invalidate")
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.post("/hook")(h.auth.events_webhook("whsec_fake"))
+    body = b'{"head":5,"events":[]}'
+    ts = str(int(h.now() / 1000))
+    sig = "v1=" + hmac.new(b"whsec_fake", f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    with TestClient(app) as c:
+        r = c.post("/hook", content=body, headers={"x-platform-timestamp": ts, "x-platform-signature": sig})
+        time.sleep(0.05)
+    assert r.status_code == 200
+    assert calls == ["invalidate", {"fresh": True}]
+
+
+async def test_v2_4_globs_need_at_least_one_character_and_unsafe_characters_are_refused():
+    from konstant_studio_auth.v2.service_keys import route_allowed
+
+    assert route_allowed(["GET /internal/status/*"], "GET", "/internal/status/1")
+    assert not route_allowed(["GET /internal/status/*"], "GET", "/internal/status/")
+    assert not route_allowed(["GET /internal/status/*"], "GET", "/internal/status")
+    assert route_allowed(["* /internal/events/**"], "GET", "/internal/events/a/b")
+    assert not route_allowed(["* /internal/events/**"], "GET", "/internal/events/")
+    for bad in ("/internal/status/1;x=../admin", "/internal/status\\..\\admin", "/internal/./status/1", "/internal/status/.",
+                "/internal/status/a\u2028b", "/internal/status/a\u2029b", "/internal/status/a\nb"):
+        assert not route_allowed(["GET /internal/**"], "GET", bad), repr(bad)
+
+
+def test_v2_5_policy_entries_with_semicolon_backslash_or_many_double_stars_are_wiring_errors():
+    auth = create_auth(service="docs", accepted_caller_services=["image"], logger=SilentLogger(), env={})
+    for bad in ("GET /internal/a;b", "GET /internal\\x", "GET /a/**/b/**/c/**"):
+        with pytest.raises(ConfigError):
+            auth.require_service_caller({"image": [bad]})
+
+
+def test_v2_5_a_repeated_or_comma_joined_x_tenant_header_is_no_hint_at_all(build, world):
+    h = build()
+    seen = []
+    h.fake.override = lambda path, body: (seen.append(body) or {"allow": False, "reason": "tenant_required"}) if path == "/v1/authorize" else None
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/x")
+    async def x(d=Depends(h.auth.require_permission("docs:read"))):
+        return {}
+
+    acme, globex = world.id("tenant", "acme"), world.id("tenant", "globex")
+    with TestClient(app) as c:
+        c.get("/x", headers=[("authorization", h.bearer("bob")["authorization"]), ("x-tenant", acme), ("x-tenant", globex)])
+        c.get("/x", headers={**h.bearer("bob"), "x-tenant": f"{acme}, {globex}"})
+    assert len(seen) == 2 and all("tenant_id" not in b["resource"] for b in seen), "neither value became a tenant"
+    seen.clear()
+    with TestClient(app) as c:  # a single value is still a hint
+        r = c.get("/x", headers={**h.bearer("bob"), "x-tenant": acme})
+    assert r.status_code == 200 and seen == [], "used as a hint: decided offline for that tenant"
+
+
+async def test_v2_5_effective_permissions_degrades_to_503_instead_of_raising(build):
+    def bug(request, principal):
+        raise RuntimeError("app bug")
+
+    h = build(tenant_resolver=bug)
+    r = await h.auth.effective_permissions(headers=h.bearer("alice"))
+    assert (r.ok, r.reason, r.status) == (False, "platform_unavailable", 503)

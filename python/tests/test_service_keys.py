@@ -207,12 +207,28 @@ async def test_an_answer_for_a_different_service_than_asked_is_not_trusted(make_
     assert r2["ok"] is False, "the answer must match the service we asked about"
 
 
-async def test_non_dict_or_garbled_resolve_replies_are_a_refusal(make_harness, world):
-    for payload in ([], "x", {"valid": True}, {"valid": "yes", "principal": {"kind": "service", "service": "image"}},
-                    {"valid": True, "principal": {"kind": "agent", "service": "image"}}):
-        h = make_harness(transport=httpx.MockTransport(lambda r, p=payload: httpx.Response(200, json=p)))
+async def test_a_well_formed_reply_that_does_not_match_is_a_refusal(make_harness, world):
+    for payload in ({"valid": True}, {"valid": True, "principal": {"kind": "agent", "service": "image"}},
+                    {"valid": True, "principal": {"kind": "service", "service": "video"}}):
+        h = make_harness(accepted_caller_services=["image"], transport=httpx.MockTransport(lambda r, p=payload: httpx.Response(200, json=p)))
         r = await h.auth.resolve_principal(headers=hdr(world, "svc_image_active"))
         assert (r["ok"], r["reason"]) == (False, "key_not_found")
+
+
+async def test_a_malformed_reply_is_could_not_decide_and_never_cached(make_harness, world):
+    asked = []
+
+    def handler(request):
+        asked.append(1)
+        return httpx.Response(200, json=payload)
+
+    for payload in ([], "x", {}, {"valid": "yes"}, {"valid": "true", "principal": {"kind": "service", "service": "image"}}, {"valid": 1}, {"valid": None}):
+        asked.clear()
+        h = make_harness(transport=httpx.MockTransport(handler))
+        for _ in range(3):
+            r = await h.auth.resolve_principal(headers=hdr(world, "svc_image_active"))
+            assert (r["ok"], r["reason"], r["status"]) == (False, "platform_unavailable", 503), payload
+        assert len(asked) >= 3, "asked again each time: nothing was cached"
 
 
 # ---- caller policy ---------------------------------------------------------------

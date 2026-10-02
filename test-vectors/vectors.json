@@ -2162,8 +2162,8 @@
       }
     },
     {
-      "id": "org-claim-not-in-snapshot-falls-back-live",
-      "desc": "the claimed org's tenant has no docs entitlement, so it is not in the snapshot: no offline mapping, the platform decides",
+      "id": "org-claim-not-in-snapshot-is-tenant-required",
+      "desc": "the claimed org's tenant has no docs entitlement, so it is not in the snapshot: the token's org does not map, and the answer is tenant_required. The library does not guess a tenant for it (the platform, asked without a tenant, would pick the user's only one)",
       "who": {
         "clerk": "alice",
         "token": {
@@ -2176,19 +2176,18 @@
         "permission": "docs:read"
       },
       "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "acme",
-        "roles": [
-          "operator"
-        ],
-        "source": "live"
-      }
+        "allow": false,
+        "reason": "tenant_required",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "by design the library refuses to guess a tenant for a token whose org does not map; the platform would pick the user's only tenant"
     },
     {
-      "id": "org-claim-unknown-org-falls-back-live",
-      "desc": "an org the platform does not know: nothing to map, the platform decides (tenant_required for a two-tenant member)",
+      "id": "org-claim-unknown-org-is-tenant-required",
+      "desc": "an org the platform does not know: nothing to map, tenant_required",
       "who": {
         "clerk": "bob",
         "token": {
@@ -2205,8 +2204,107 @@
         "reason": "tenant_required",
         "status": 403,
         "tenant": null,
-        "source": "live"
+        "source": "none"
       }
+    },
+    {
+      "id": "org-claim-unmapped-ignores-header",
+      "desc": "R1: the org does not map and an x-tenant header names another tenant: the header is IGNORED, never a fallback",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_dormant"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_hint": "globex"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_required",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "by design the library never falls back to the header for a token whose org does not map"
+    },
+    {
+      "id": "org-claim-mapped-ignores-header",
+      "desc": "R1: the org maps to acme; a header naming globex (where this user is also a member) does not move the token",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_hint": "globex"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity_tenant": "acme"
+    },
+    {
+      "id": "org-claim-snapshot-unavailable-ignores-header",
+      "desc": "R1: the snapshot cannot be read (cold cache, platform down), so the org cannot be mapped: could not decide, and still not the header",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_hint": "globex"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      },
+      "platform": "down",
+      "cache_age_s": null
+    },
+    {
+      "id": "header-works-without-an-org-claim",
+      "desc": "a token with no org claim may still use the header (agency, superadmin and multi-tenant users); the decision still checks the membership",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_hint": "globex"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "globex",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity_tenant": "globex"
     }
   ],
   "extraction": {
@@ -2537,8 +2635,8 @@
         "allow": false
       },
       {
-        "id": "star-matches-empty-segment",
-        "desc": "a trailing slash after the star is its own thing: the star may be empty",
+        "id": "star-needs-at-least-one-character",
+        "desc": "`GET /internal/status/*` must not authorise the bare collection path",
         "routes": [
           "GET /internal/status/*",
           "POST /internal/render",
@@ -2547,7 +2645,7 @@
         ],
         "method": "GET",
         "path": "/internal/status/",
-        "allow": true
+        "allow": false
       },
       {
         "id": "double-star-crosses-segments",
@@ -2811,6 +2909,96 @@
         "method": "DELETE",
         "path": "/internal/ping",
         "allow": true
+      },
+      {
+        "id": "star-does-not-match-the-parent-path",
+        "desc": "no trailing slash",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status",
+        "allow": false
+      },
+      {
+        "id": "double-star-needs-at-least-one-character",
+        "desc": "",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**"
+        ],
+        "method": "GET",
+        "path": "/internal/events/",
+        "allow": false
+      },
+      {
+        "id": "semicolon-path-parameter",
+        "desc": "';' parameters are read differently by different servers",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/1;x=../admin",
+        "allow": false
+      },
+      {
+        "id": "backslash",
+        "desc": "some servers treat it as a slash",
+        "routes": [
+          "GET /internal/status/*",
+          "POST /internal/render",
+          "* /internal/events/**",
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status\\\\..\\\\admin",
+        "allow": false
+      },
+      {
+        "id": "single-dot-segment",
+        "desc": "",
+        "routes": [
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/./status/1",
+        "allow": false
+      },
+      {
+        "id": "trailing-single-dot-segment",
+        "desc": "",
+        "routes": [
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/.",
+        "allow": false
+      },
+      {
+        "id": "unicode-line-separator",
+        "desc": "U+2028 is not matched by '.' in some regex engines",
+        "routes": [
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/a\\u2028b",
+        "allow": false
+      },
+      {
+        "id": "unicode-paragraph-separator",
+        "desc": "",
+        "routes": [
+          "GET /internal/**"
+        ],
+        "method": "GET",
+        "path": "/internal/status/a\\u2029b",
+        "allow": false
       }
     ]
   }

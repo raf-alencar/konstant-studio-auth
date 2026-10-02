@@ -51,6 +51,14 @@ def _positive(name, value, integer=False, allow_zero=False):
     return value
 
 
+def _string_list(name, value):
+    """A string where a list belongs is a silent hole (`"abc" in "abcdef"` is a substring test, and
+    list("abc") splits it into characters): refuse anything but a list of non-empty strings."""
+    if not isinstance(value, (list, tuple)) or any(not isinstance(v, str) or not v.strip() for v in value):
+        raise ConfigError(f"{name} must be a list of non-empty strings (got {value!r})")
+    return list(value)
+
+
 def resolve_config(opts=None, env=None):
     opts = opts or {}
     # Unlike JS, a misspelled or removed option (e.g. the old `service_keys`) is an error, not silently ignored.
@@ -68,8 +76,8 @@ def resolve_config(opts=None, env=None):
         env.get("CLERK_JWKS_URL"),
         f"{issuer.rstrip('/')}/.well-known/jwks.json" if issuer else "",
     )
-    authorized_parties = _first(clerk_opts.get("authorized_parties"), _csv(env.get("CLERK_AUTHORIZED_PARTIES")))
-    audience = _first(clerk_opts.get("audience"), _csv(env.get("CLERK_AUDIENCE")))
+    authorized_parties = _string_list("clerk.authorized_parties", _first(clerk_opts.get("authorized_parties"), _csv(env.get("CLERK_AUTHORIZED_PARTIES"))))
+    audience = _string_list("clerk.audience", _first(clerk_opts.get("audience"), _csv(env.get("CLERK_AUDIENCE"))))
 
     # Same rule as the platform: without a list of allowed `azp` origins, any
     # token this Clerk instance ever issued (for any of its apps) would be
@@ -110,7 +118,9 @@ def resolve_config(opts=None, env=None):
         ),
         # Catalog services whose inbound service keys (stgs_) this app accepts. Explicit configuration,
         # never "any": with none, every service key is refused (see service_keys.py).
-        accepted_caller_services=list(_first(opts.get("accepted_caller_services"), _csv(env.get("AUTH_ACCEPTED_CALLER_SERVICES")))),
+        accepted_caller_services=_string_list(
+            "accepted_caller_services", _first(opts.get("accepted_caller_services"), _csv(env.get("AUTH_ACCEPTED_CALLER_SERVICES")))
+        ),
         service_key_cache=SimpleNamespace(
             valid_ttl_seconds=_positive("service_key_cache.valid_ttl_seconds", _first(sk.get("valid_ttl_seconds"), 60)),
             invalid_ttl_seconds=_positive("service_key_cache.invalid_ttl_seconds", _first(sk.get("invalid_ttl_seconds"), 10)),

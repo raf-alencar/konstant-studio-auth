@@ -36,6 +36,7 @@ async function credential(ctx, c) {
 function resourceOf(ctx, c) {
   const r = {};
   if (c.ask.tenant) r.tenant = ctx.world.id('tenant', c.ask.tenant);
+  if (c.ask.tenant_hint) r.tenantHint = ctx.world.id('tenant', c.ask.tenant_hint);
   if (c.ask.brand) r.brand = c.ask.brand;
   if (c.ask.domain) r.domain = c.ask.domain;
   if (c.ask.mailbox) r.mailbox = c.ask.mailbox;

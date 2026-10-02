@@ -39,7 +39,7 @@ class SnapshotCache {
   //   stale: past the TTL, platform unreachable, still inside the stale-read window
   //   none:  nothing usable (never loaded, or older than the stale-read window)
   async get() {
-    if (this.entry && this.now() - this.entry.fetchedAt < this._ttlMs()) return this._view('fresh');
+    if (this.entry && !this.entry.invalidated && this.now() - this.entry.fetchedAt < this._ttlMs()) return this._view('fresh');
     // After a failed refresh, do not make every request wait out a timeout:
     // go straight to the stale/none answer for a moment.
     const backingOff = this._failedAt !== null && this.now() - this._failedAt < RETRY_AFTER_FAILURE_MS;
@@ -88,10 +88,11 @@ class SnapshotCache {
     const res = await this.client.snapshot(this.service, this.entry?.etag);
     if (res.notModified && this.entry) {
       this.entry.fetchedAt = this.now();
+      this.entry.invalidated = false;
       return;
     }
     if (res.notModified) throw new PlatformUnavailable('304 without a cached snapshot');
-    this.entry = { body: res.body, etag: res.etag, fetchedAt: this.now() };
+    this.entry = { body: res.body, etag: res.etag, fetchedAt: this.now(), invalidated: false };
     // Events the snapshot already reflects are harmless to re-see, so start the
     // cursor at the snapshot's own version.
     this.cursor = Math.max(this.cursor, res.body.version || 0);
@@ -111,8 +112,11 @@ class SnapshotCache {
     return false;
   }
 
+  // Mark the cached snapshot as needing revalidation NOW. (A flag, not a timestamp: setting fetchedAt to
+  // 0 does nothing against a monotonic clock that has not yet run for a full TTL.) If the revalidation
+  // fails the entry is still served as stale inside the stale-read window, as for any expired entry.
   invalidate() {
-    if (this.entry) this.entry.fetchedAt = 0;
+    if (this.entry) this.entry.invalidated = true;
   }
 
   startPolling() {

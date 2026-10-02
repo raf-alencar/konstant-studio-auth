@@ -348,3 +348,118 @@ test('step-up denial explains itself: MFA must be enabled and the fva claim pres
   assert.match(body.message, /second-factor/);
   assert.match(body.message, /fva/);
 });
+
+// ---- CoS verdict 2: the final fixes -------------------------------------------------------------------
+test('V2-1: with an org claim the header is never a fallback: unmapped org => tenant_required, even with no service configured', async () => {
+  const none = await build({ service: '' }); // no service => no snapshot to map through
+  const t = await none.token('bob', { extra: { org_id: 'org_acme' } });
+  const d = await none.auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenantHint: GLOBEX } });
+  assert.deepEqual([d.allow, d.reason, d.source], [false, 'tenant_required', 'none']);
+  assert.equal(none.fake.count('POST', '/v1/authorize'), 0, 'not sent on to the platform with the header either');
+});
+
+test('V2-1: an explicit route tenant and the app resolver still win over an org claim (they are app code, not client input)', async () => {
+  const { auth, token } = await build({ tenantResolver: () => GLOBEX });
+  const t = await token('bob', { extra: { org_id: 'org_dormant' } }); // an org that does not map
+  const viaResolver = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read' });
+  assert.deepEqual([viaResolver.allow, viaResolver.tenantId, viaResolver.tenantSource], [true, GLOBEX, 'resolver']);
+  const explicit = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenant: ACME } });
+  assert.deepEqual([explicit.tenantId, explicit.tenantSource], [ACME, 'explicit']);
+});
+
+test('V2-1: effectivePermissions follows the same rule', async () => {
+  const { auth, token } = await build();
+  const unmapped = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice', { extra: { org_id: 'org_dormant' } })}` } });
+  assert.deepEqual([unmapped.ok, unmapped.reason, unmapped.permissions], [true, 'tenant_required', []]);
+});
+
+test('V2-2: list options must be arrays of non-empty strings (a string passes `includes` and splits into characters)', () => {
+  const clerk = (o) => ({ issuer: 'https://c.test', jwksUrl: 'http://j.test', authorizedParties: ['https://a.test'], ...o });
+  for (const bad of [{ authorizedParties: 'https://a.test' }, { authorizedParties: [''] }, { authorizedParties: ['  '] }, { authorizedParties: [1] }, { audience: 'x' }, { audience: [''] }]) {
+    assert.throws(() => createAuth({ service: 'docs', logger: silent, clerk: clerk(bad) }), ConfigError, JSON.stringify(bad));
+  }
+  for (const bad of ['image', [''], [1], [null], 'image,video']) {
+    assert.throws(() => createAuth({ service: 'docs', logger: silent, acceptedCallerServices: bad }), ConfigError, JSON.stringify(bad));
+  }
+  assert.doesNotThrow(() => createAuth({ service: 'docs', logger: silent, clerk: clerk({ audience: [] }), acceptedCallerServices: [] }));
+});
+
+test('V2-3: invalidate() really expires a cached snapshot, even in the first seconds of the process', async () => {
+  const { auth, fake } = await build();
+  await auth.cache.get();
+  const n = fake.count('GET', '/v1/authorize/snapshot');
+  await auth.cache.get();
+  assert.equal(fake.count('GET', '/v1/authorize/snapshot'), n, 'fresh before');
+  auth.cache.invalidate(); // monotonic clock is at 0 here: the old fetchedAt = 0 would have expired nothing
+  await auth.cache.get();
+  assert.equal(fake.count('GET', '/v1/authorize/snapshot'), n + 1, 'revalidated at once after invalidate');
+  await auth.cache.get();
+  assert.equal(fake.count('GET', '/v1/authorize/snapshot'), n + 1, 'and fresh again afterwards (the flag clears)');
+});
+
+test('V2-3: an invalidated snapshot whose revalidation fails is still served stale inside the window', async () => {
+  const { auth, fake } = await build();
+  await auth.cache.get();
+  auth.cache.invalidate();
+  fake.down = true;
+  assert.equal((await auth.cache.get()).state, 'stale');
+});
+
+test('V2-3: the signed webhook asks for a FRESH refresh (one that starts after the change)', async () => {
+  const crypto = require('node:crypto');
+  const { auth } = await build();
+  const calls = [];
+  auth.cache.refresh = (o) => { calls.push(o); return Promise.resolve(); };
+  auth.cache.invalidate = () => calls.push('invalidate');
+  const secret = 'whsec_fake-secret-for-tests';
+  const body = Buffer.from('{"head":5,"events":[]}');
+  const ts = String(Math.floor(Date.now() / 1000));
+  const sig = 'v1=' + crypto.createHmac('sha256', secret).update(`${ts}.`).update(body).digest('hex');
+  const res = { code: 200, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } };
+  auth.eventsWebhook({ secret })({ headers: { 'x-platform-timestamp': ts, 'x-platform-signature': sig }, body }, res);
+  assert.equal(res.code, 200);
+  assert.deepEqual(calls, ['invalidate', { fresh: true }]);
+});
+
+test('V2-5: a malformed resolve reply is "could not decide", never cached as an invalid key', async () => {
+  const { auth, fake } = await build();
+  let asked = 0;
+  fake.override = (path) => { if (path === '/v1/principals/resolve') { asked += 1; return { valid: 'yes' }; } };
+  for (let i = 0; i < 3; i++) {
+    const r = await auth.resolvePrincipal({ headers: { 'x-api-key': raw('svc_image_active') } });
+    assert.deepEqual([r.ok, r.reason, r.status], [false, 'platform_unavailable', 503]);
+  }
+  assert.ok(asked >= 3, 'asked again each time: nothing was cached');
+});
+
+test('V2-5: a repeated x-tenant header is ambiguous: no hint at all (Express and Next)', async (t) => {
+  const { auth, token, fake } = await build();
+  let body;
+  fake.override = (path, b) => { if (path === '/v1/authorize') { body = b; return { allow: false, reason: 'tenant_required' }; } };
+  const app = express();
+  app.get('/x', auth.express.requirePermission('docs:read', {}), (req, res) => res.json({}));
+  const server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+  t.after(() => server.close());
+  const bearer = `Bearer ${await token('bob')}`;
+  const send = (headers) => new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port: server.address().port, path: '/x', headers }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.end();
+  });
+  await send({ authorization: bearer, 'x-tenant': [ACME, GLOBEX] }); // sent twice
+  assert.equal(body.resource.tenant_id, undefined, 'neither value became a tenant');
+  const nextRes = await auth.next.authorizeRequest(new Request('http://app.test/x', { headers: { authorization: bearer, 'x-tenant': `${ACME}, ${GLOBEX}` } }), 'docs:read', {});
+  assert.equal(nextRes.tenantSource, null, 'Next: joined repeated header ignored');
+});
+
+test('V2-5: effectivePermissions degrades to a 503 instead of throwing (it is informational)', async () => {
+  const { auth, token } = await build({ tenantResolver: () => { throw new Error('app bug'); } });
+  const r = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice')}` } });
+  assert.deepEqual([r.ok, r.reason, r.status], [false, 'platform_unavailable', 503]);
+});
+
+test('V2-5: policy entries with ";", backslashes or more than two ** are wiring errors', () => {
+  const auth = createAuth({ service: 'docs', acceptedCallerServices: ['image'], logger: silent });
+  for (const bad of ['GET /internal/a;b', 'GET /internal\\x', 'GET /a/**/b/**/c/**']) {
+    assert.throws(() => auth.express.requireServiceCaller({ image: [bad] }), Error, bad);
+  }
+});
