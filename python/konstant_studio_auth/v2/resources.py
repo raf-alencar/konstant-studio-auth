@@ -64,6 +64,11 @@ def build_index(snapshot, max_resources, logger):
     index = ResourceIndex()
     tenants = snapshot.get("tenants") if isinstance(snapshot, dict) else None
     tenants = tenants if isinstance(tenants, list) else []
+    # A tenant without a usable id cannot own anything, and silently skipping it would let a LATER tenant take
+    # its ids as if nobody had them: the whole snapshot is then unsupported (unavailable), never "unowned".
+    if any(not isinstance(t, dict) or not isinstance(t.get("id"), str) or t.get("id") == "" for t in tenants):
+        index.supported = False
+        return index
     # Zero tenants proves nothing about support, and cannot own anything either way. With tenants, every one
     # of them must carry the field: a platform that has C0f always sends it (an empty list when none).
     if tenants and any(not isinstance(t, dict) or not isinstance(t.get("resources"), list) for t in tenants):
@@ -71,32 +76,41 @@ def build_index(snapshot, max_resources, logger):
         return index
     warned_conflict = False
     for t in tenants:
-        for r in t.get("resources") or []:
-            r = r if isinstance(r, dict) else {}
-            kind = normalize_kind(r.get("kind"))
-            rid = normalize_id(r.get("local_id"))
+        tkey = t["id"].lower()
+        for row in t["resources"]:
+            row = row if isinstance(row, dict) else {}
+            kind = normalize_kind(row.get("kind"))
+            rid = normalize_id(row.get("local_id"))
             if kind is None or rid is None:
                 continue  # a malformed entry can never grant ownership
+            by_id = index.owners.setdefault(kind, {})
+            have = by_id.get(rid)
+            if have == t["id"]:
+                continue  # the same row repeated: one resource (and one against the cap)
             index.count += 1
             if index.count > max_resources:
                 index.too_large = True
                 logger.error(f"resource index larger than {max_resources} entries: lookups are refused")
                 index.owners, index.by_tenant = {}, {}
                 return index
-            by_id = index.owners.setdefault(kind, {})
-            have = by_id.get(rid)
             if have is None:
-                by_id[rid] = t.get("id")
-            elif have != t.get("id"):
+                by_id[rid] = t["id"]
+            else:
                 by_id[rid] = _CONFLICT
                 if not warned_conflict:
                     warned_conflict = True
                     logger.error("the snapshot gives one local id to two tenants: that id is refused (deny) until the platform is fixed")
-            index.by_tenant.setdefault(str(t.get("id")).lower(), {}).setdefault(kind, []).append(rid)
-    for kinds in index.by_tenant.values():
-        for ids in kinds.values():
-            ids.sort()
+            # sorted lazily, on the first resources_for that needs it: tenant_for never pays for it
+            index.by_tenant.setdefault(tkey, {}).setdefault(kind, _IdList()).ids.append(rid)
     return index
+
+
+class _IdList:
+    __slots__ = ("ids", "sorted")
+
+    def __init__(self):
+        self.ids = []
+        self.sorted = False
 
 
 def owner_of(index, kind, local_id):
@@ -112,4 +126,10 @@ def ids_of(index, tenant_id, kind):
     k = normalize_kind(kind)
     if k is None or not isinstance(tenant_id, str):
         return []
-    return list(index.by_tenant.get(tenant_id.lower(), {}).get(k, []))
+    lst = index.by_tenant.get(tenant_id.lower(), {}).get(k)
+    if lst is None:
+        return []
+    if not lst.sorted:
+        lst.ids.sort()  # Python orders str by code point
+        lst.sorted = True
+    return list(lst.ids)

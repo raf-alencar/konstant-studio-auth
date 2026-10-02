@@ -2455,7 +2455,7 @@
     },
     {
       "id": "tenant-of-unowned-resource",
-      "desc": "nobody owns it: denied, never guessed",
+      "desc": "nobody owns it: ONE caller-visible answer, the same as for an object of a tenant the caller has nothing in (whether an id exists is not told to someone who may not act on it); the audit event keeps the distinction",
       "who": {
         "clerk": "alice"
       },
@@ -2468,17 +2468,18 @@
       },
       "expect": {
         "allow": false,
-        "reason": "resource_not_owned",
+        "reason": "no_permission",
         "status": 403,
         "tenant": null,
-        "source": "none"
+        "source": "none",
+        "audit_detail": "resource_not_owned"
       },
       "parity": false,
       "parity_note": "decided by the library's registry lookup; the platform has no such question"
     },
     {
       "id": "tenant-of-another-tenants-resource",
-      "desc": "alice is a member of acme only; the object is globex's: the decision is made in globex, where she has nothing",
+      "desc": "alice is a member of acme only; the object is globex's: the decision is made in globex, where she has nothing (the same reason a caller gets for an id nobody owns)",
       "who": {
         "clerk": "alice"
       },
@@ -2501,7 +2502,7 @@
     },
     {
       "id": "tenant-of-conflicts-with-explicit-tenant",
-      "desc": "a route that names one tenant and an object owned by another",
+      "desc": "a route that names one tenant and an object owned by another: the same single answer; the audit event says tenant_mismatch",
       "who": {
         "clerk": "alice"
       },
@@ -2515,10 +2516,11 @@
       },
       "expect": {
         "allow": false,
-        "reason": "tenant_mismatch",
+        "reason": "no_permission",
         "status": 403,
         "tenant": null,
-        "source": "none"
+        "source": "none",
+        "audit_detail": "tenant_mismatch"
       },
       "parity": false,
       "parity_note": "decided by the library's registry lookup"
@@ -2625,6 +2627,224 @@
       },
       "platform": "down",
       "cache_age_s": null
+    },
+    {
+      "id": "tenant-of-revoked-key-learns-nothing-about-ownership",
+      "desc": "a credential only the platform can verify is verified FIRST: a revoked key gets the credential outcome, never an answer about the id",
+      "who": {
+        "key": "agent_acme_revoked"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "nope"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_revoked",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "the order of verification versus the registry lookup is the library's; the platform has no such question"
+    },
+    {
+      "id": "tenant-of-unknown-key-learns-nothing-about-ownership",
+      "desc": "same for a key the platform has never seen, whether or not the id is owned",
+      "who": {
+        "key": "agent_unknown"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "library ordering"
+    },
+    {
+      "id": "tenant-of-bad-key-with-the-registry-unreadable",
+      "desc": "...and an unreadable registry does not turn the credential failure into a 503 (no 503-before-401 oracle)",
+      "who": {
+        "key": "agent_unknown"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "key_not_found",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      },
+      "omit_resources": true,
+      "parity": false,
+      "parity_note": "needs a platform without the registry field"
+    },
+    {
+      "id": "tenant-of-valid-key-with-the-registry-unreadable",
+      "desc": "a verified key whose registry cannot be read: could not decide",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      },
+      "omit_resources": true,
+      "parity": false,
+      "parity_note": "needs a platform without the registry field"
+    },
+    {
+      "id": "tenant-of-valid-key-unowned-id",
+      "desc": "once the key is verified, an unowned id is the single answer",
+      "who": {
+        "key": "guest_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "nope"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": null,
+        "source": "none",
+        "audit_detail": "resource_not_owned"
+      },
+      "parity": false,
+      "parity_note": "library-side ownership answer"
+    },
+    {
+      "id": "tenant-of-stale-ownership-refused-for-a-write",
+      "desc": "the registry answer is stale (cache older than its TTL, platform down): a WRITE is refused, it could still name the previous owner",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      },
+      "platform": "down",
+      "cache_age_s": 120
+    },
+    {
+      "id": "tenant-of-stale-ownership-served-for-a-read",
+      "desc": "...but a READ is served from it, and the decision says so",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline",
+        "stale": true,
+        "tenant_source": "resource"
+      },
+      "platform": "down",
+      "cache_age_s": 120
+    },
+    {
+      "id": "tenant-of-stale-ownership-refused-for-an-unknown-category",
+      "desc": "another service's permission has no category here: treated as a write",
+      "who": {
+        "clerk": "bob"
+      },
+      "ask": {
+        "permission": "mail:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      },
+      "platform": "down",
+      "cache_age_s": 120
+    },
+    {
+      "id": "tenant-of-fresh-ownership-allows-a-write",
+      "desc": "with a fresh registry a write is decided as usual",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:write",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline",
+        "tenant_source": "resource"
+      },
+      "parity_tenant": "acme"
     }
   ],
   "extraction": {

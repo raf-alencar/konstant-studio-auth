@@ -182,7 +182,7 @@ def test_fastapi_tenant_of_the_object_names_the_tenant_unowned_and_unreadable_ar
         other = c.get("/brands/brand-g", headers=alice)  # globex's: alice has nothing there
         assert (other.status_code, other.json()["detail"]["reason"]) == (403, "no_permission")
         unowned = c.get("/brands/nope", headers=alice)
-        assert (unowned.status_code, unowned.json()["detail"]["reason"]) == (403, "resource_not_owned")
+        assert (unowned.status_code, unowned.json()["detail"]["reason"]) == (403, "no_permission")
         assert sorted(unowned.json()["detail"]) == ["error", "reason"], "nothing about who owns what leaks in a denial"
         h.fake.omit_resources = True
         h.auth.cache.invalidate()
@@ -196,11 +196,12 @@ def test_fastapi_require_resource_in_tenant_same_tenant_passes_others_are_refuse
         bob = h.bearer("bob")  # a member of acme AND globex
         assert c.get(f"/t/{h.acme}/brands/brand-a", headers=bob).status_code == 200
         mismatch = c.get(f"/t/{h.acme}/brands/brand-g", headers=bob)  # allowed in acme, but the object is globex's
-        assert (mismatch.status_code, mismatch.json()["detail"]["reason"]) == (403, "tenant_mismatch")
+        assert (mismatch.status_code, mismatch.json()["detail"]["reason"]) == (403, "no_permission")
         unowned = c.get(f"/t/{h.acme}/brands/nope", headers=bob)
-        assert (unowned.status_code, unowned.json()["detail"]["reason"]) == (403, "resource_not_owned")
+        assert (unowned.status_code, unowned.json()["detail"]["reason"]) == (403, "no_permission")
+        assert unowned.json() == mismatch.json(), "unowned and another tenant's look the same"
         no_decision = c.get("/no-decision/brand-a", headers=bob)  # misuse: nothing was decided first
-        assert (no_decision.status_code, no_decision.json()["detail"]["reason"]) == (403, "tenant_mismatch"), "refused, never assumed"
+        assert (no_decision.status_code, no_decision.json()["detail"]["reason"]) == (403, "no_permission"), "refused, never assumed"
         h.fake.omit_resources = True
         h.auth.cache.invalidate()
         assert c.get(f"/t/{h.acme}/brands/brand-a", headers=bob).status_code == 503
@@ -240,10 +241,10 @@ async def test_authorize_resource_in_tenant_needs_an_allowing_decision(build):
     h = build()
     for decision in (None, "nonsense", object()):
         r = await h.auth.authorize_resource_in_tenant(decision=decision, kind="brand", local_id="brand-a")
-        assert (r.allow, r.reason) == (False, "tenant_mismatch")
+        assert (r.allow, r.reason) == (False, "no_permission")
     denied = await h.auth.authorize(headers={}, permission="docs:read", resource={"tenant": h.acme})
     r = await h.auth.authorize_resource_in_tenant(decision=denied, kind="brand", local_id="brand-a")
-    assert (r.allow, r.reason) == (False, "tenant_mismatch")
+    assert (r.allow, r.reason) == (False, "no_permission")
 
 
 async def test_tenant_of_is_only_reached_after_the_credential_is_verified(build):
@@ -269,3 +270,154 @@ async def test_kinds_the_registry_cannot_hold_are_refused_even_if_a_snapshot_lis
         assert (await h.auth.tenant_for(k, "x"))["tenant_id"] is None, repr(k)
         assert (await h.auth.resources_for(h.acme, k))["ids"] == [], repr(k)
     assert (await h.auth.tenant_for("ok_kind-1", "x"))["tenant_id"] == h.acme
+
+
+# ---- V4: the fourth CoS review -------------------------------------------------------------------------------
+
+
+def brand_app(h):
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/brands/{id}")
+    async def brand(d=Depends(h.auth.require_permission("docs:read", tenant_of=("brand", lambda r: r.path_params["id"])))):
+        return {}
+
+    return app
+
+
+def test_v4_1_a_garbage_key_learns_nothing_about_ownership_and_the_registry_is_never_consulted(build):
+    import base64
+    import json as _json
+
+    h = build()
+    garbage = {"x-api-key": "stga_" + "x" * 40}
+    with TestClient(brand_app(h)) as c:
+        owned = c.get("/brands/brand-a", headers=garbage)
+        unowned = c.get("/brands/nope", headers=garbage)
+        assert (owned.status_code, owned.json()) == (401, {"detail": {"error": "Unauthorized", "reason": "key_not_found"}})
+        assert (unowned.status_code, unowned.json()) == (owned.status_code, owned.json()), "identical: nothing about the id"
+        assert snapshots_calls(h) == 0, "the registry was not even read for an unverified caller"
+        # ...nor does a registry outage turn the credential failure into a 503
+        h.fake.omit_resources = True
+        again = c.get("/brands/brand-a", headers=garbage)
+        assert (again.status_code, again.json()) == (owned.status_code, owned.json())
+        # audience tokens are deferred to the platform too
+        b64 = lambda o: base64.urlsafe_b64encode(_json.dumps(o).encode()).rstrip(b"=").decode()  # noqa: E731
+        aud = f"{b64({'alg': 'EdDSA'})}.{b64({'iss': 'stighive-platform'})}.c2ln"
+        h.fake.override = lambda path, body: {"valid": False, "reason": "token_invalid"} if path == "/v1/principals/resolve" else None
+        r = c.get("/brands/brand-a", headers={"authorization": f"Bearer {aud}"})
+        assert (r.status_code, r.json()["detail"]["reason"]) == (401, "token_invalid")
+
+
+def test_v4_2_an_authenticated_user_gets_the_same_response_for_an_unowned_id_and_another_tenants_id(build):
+    h = build()
+    with TestClient(brand_app(h)) as c:
+        alice = h.bearer("alice")  # a member of acme only
+
+        def ask(i):
+            r = c.get(f"/brands/{i}", headers=alice)
+            return r.status_code, {k: v for k, v in r.headers.items() if k in ("www-authenticate", "retry-after")}, r.json()
+
+        assert ask("brand-g") == ask("does-not-exist"), "globex's brand and a brand nobody owns look the same"
+
+
+async def test_v4_2_the_audit_event_keeps_the_distinction_the_result_does_not_carry_it(build):
+    events = []
+    h = build(on_event=events.append)
+    hd = h.bearer("alice")
+    unowned = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant_of": {"kind": "brand", "local_id": "nope"}})
+    other = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant_of": {"kind": "brand", "local_id": "brand-g"}})
+    conflict = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant": h.acme, "tenant_of": {"kind": "brand", "local_id": "brand-g"}})
+    assert [unowned.reason, other.reason, conflict.reason] == ["no_permission"] * 3
+    assert [e["detail"] for e in events] == ["resource_not_owned", None, "tenant_mismatch"]
+    import json as _json
+
+    for r in (unowned, other, conflict):
+        blob = _json.dumps(r.to_dict()) + repr(r)
+        assert "resource_not_owned" not in blob and "tenant_mismatch" not in blob
+    assert "brand-g" not in str(events), "and still no local ids in the audit"
+
+
+async def test_v4_3_the_post_decision_helper_refuses_stale_ownership_for_a_write_and_serves_it_for_a_read(build):
+    h = build()
+    hd = h.bearer("alice")
+    read = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant": h.acme})
+    write = await h.auth.authorize(headers=hd, permission="docs:write", resource={"tenant": h.acme})
+    assert [read.category, write.category] == ["read", "write"], "the decision knows its permission category"
+    h.fake.down = True
+    h.tick(120)  # past the TTL, inside the stale window: the registry answer is stale
+    r = await h.auth.authorize_resource_in_tenant(decision=read, kind="brand", local_id="brand-a")
+    assert (r.allow, r.stale) == (True, True), "a read is served from the stale answer and says so"
+    w = await h.auth.authorize_resource_in_tenant(decision=write, kind="brand", local_id="brand-a")
+    assert (w.allow, w.reason, w.status) == (False, "platform_unavailable", 503), "a write is refused"
+    forced = await h.auth.authorize_resource_in_tenant(decision=read, kind="brand", local_id="brand-a", write=True)
+    assert forced.allow is False, "an explicit write flag overrides the decision category"
+    unknown = await h.auth.authorize_resource_in_tenant(decision=read.evolve(category=None), kind="brand", local_id="brand-a")
+    assert unknown.allow is False, "an unknown category counts as a write"
+
+
+async def test_v4_3_an_invalidated_snapshot_whose_refresh_fails_does_not_grant_the_old_owner_a_write(build):
+    h = build()
+    hd = h.bearer("alice")
+    await h.auth.cache.get()
+    h.auth.cache.invalidate()  # a change event said the registry moved
+    h.fake.down = True  # ...and the refresh fails
+    w = await h.auth.authorize(headers=hd, permission="docs:write", resource={"tenant_of": {"kind": "brand", "local_id": "brand-a"}})
+    assert (w.allow, w.reason) == (False, "platform_unavailable")
+    r = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant_of": {"kind": "brand", "local_id": "brand-a"}})
+    assert (r.allow, r.stale) == (True, True), "a read still works and is marked stale"
+
+
+async def test_v4_3_a_key_based_write_is_refused_on_stale_ownership_even_when_authorize_still_works(build, local_world):
+    import httpx
+
+    h = build()
+    key = {"x-api-key": local_world.raw_key(next(k for k in local_world.spec["keys"] if k["ref"] == "agent_acme_active"))}
+    await h.auth.cache.get()  # registry loaded
+    h.tick(120)  # past the TTL
+    # the snapshot route fails, everything else (resolve, authorize) answers
+    h.fake.override = lambda path, body: httpx.Response(503, json={}) if path == "/v1/authorize/snapshot" else None
+    h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["operator"]}
+    write = await h.auth.authorize(headers=key, permission="docs:write", resource={"tenant_of": {"kind": "brand", "local_id": "brand-a"}})
+    assert (write.allow, write.reason, write.status) == (False, "platform_unavailable", 503), "the old owner cannot be granted a write"
+    assert h.fake.count("POST", "/v1/authorize") == 0, "never even asked the platform to decide on stale ownership"
+    read = await h.auth.authorize(headers=key, permission="docs:read", resource={"tenant_of": {"kind": "brand", "local_id": "brand-a"}})
+    assert (read.allow, read.source, read.stale) == (True, "live", True), "a read is decided and says the ownership was stale"
+
+
+async def test_v4_4_a_snapshot_tenant_without_an_id_makes_the_snapshot_unsupported(build):
+    h = build()
+    h.fake.override = lambda path, body: snapshot_with([
+        {**tenant("x", [{"kind": "brand", "local_id": "shared"}]), "id": None},
+        tenant(h.globex, [{"kind": "brand", "local_id": "shared"}]),
+    ]) if path == "/v1/authorize/snapshot" else None
+    assert [(await h.auth.tenant_for("brand", "shared"))["ok"], (await h.auth.resources_for(h.globex, "brand"))["ok"]] == [False, False]
+    for bad in (None, "", 5, {}):
+        h.fake.override = lambda path, body, bad=bad: snapshot_with([{**tenant("x", []), "id": bad}, tenant(h.globex, [])]) if path == "/v1/authorize/snapshot" else None
+        h.auth.cache.invalidate()
+        assert (await h.auth.tenant_for("brand", "a"))["ok"] is False, repr(bad)
+
+
+async def test_v4_5_repeated_rows_count_once_toward_the_cap_too_and_list_once(build):
+    h = build(max_resources=3)
+    row = {"kind": "brand", "local_id": "dup"}
+    h.fake.override = lambda path, body: snapshot_with([tenant(h.acme, [row] * 5 + [{"kind": "brand", "local_id": "two"}, {"kind": "brand", "local_id": "three"}])]) if path == "/v1/authorize/snapshot" else None
+    assert (await h.auth.tenant_for("brand", "dup"))["tenant_id"] == h.acme, "five copies of one row stay under a cap of three"
+    assert (await h.auth.resources_for(h.acme, "brand"))["ids"] == ["dup", "three", "two"]
+
+
+def test_v4_6_ids_are_sorted_lazily_by_code_point():
+    import random
+
+    from konstant_studio_auth.v2.resources import build_index, ids_of
+
+    alphabet = ["a", "B", "é", "Ā", "퟿", "", "Ａ", "￿", "\U00010000", "\U0001F600", "\U0010FFFF"]
+    rnd = random.Random(7)
+    ids = set()
+    while len(ids) < 400:
+        ids.add("".join(rnd.choice(alphabet) for _ in range(rnd.randint(1, 3))))
+    reference = sorted(ids, key=lambda s: [ord(ch) for ch in s])
+    index = build_index({"tenants": [{"id": "t", "resources": [{"kind": "k", "local_id": i} for i in ids]}]}, 1000, SilentLogger())
+    assert index.by_tenant["t"]["k"].sorted is False, "building the index sorts nothing"
+    assert ids_of(index, "t", "k") == reference
+    assert index.by_tenant["t"]["k"].sorted is True

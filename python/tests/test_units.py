@@ -307,7 +307,7 @@ async def test_audit_event_has_no_credential_material(make_harness, world, clerk
         assert s not in blob
     assert events[0]["type"] == "auth.decision" and events[0]["run_id"] == "r1" and events[0]["ts"].endswith("Z")
     assert events[1]["actor"]["key_prefix"] == "stga_"
-    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "tenant_source", "caller_service", "actor", "key_id", "run_id"}
+    assert set(events[0]) == {"type", "ts", "service", "permission", "allow", "reason", "source", "stale", "tenant_id", "via_tenant", "tenant_source", "detail", "caller_service", "actor", "key_id", "run_id"}
 
 
 async def test_a_failing_event_sink_never_breaks_a_request(make_harness, world, clerk_keys):

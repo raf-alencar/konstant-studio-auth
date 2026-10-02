@@ -71,10 +71,11 @@ class Principal:
 
 
 class Result:
-    __slots__ = ("allow", "reason", "status", "principal", "tenant_id", "via_tenant", "roles", "sensitive", "source", "stale", "tenant_source")
+    __slots__ = ("allow", "reason", "status", "principal", "tenant_id", "via_tenant", "roles", "sensitive", "source",
+                 "stale", "tenant_source", "category", "_audit_detail")
 
     def __init__(self, allow, reason, principal=None, tenant_id=None, via_tenant=None, roles=None,
-                 sensitive=False, source="none", stale=False, tenant_source=None):
+                 sensitive=False, source="none", stale=False, tenant_source=None, category=None, detail=None):
         self.allow = allow is True  # exactly True: a truthy string must never read as a yes
         self.tenant_source = tenant_source
         self.reason = reason
@@ -86,9 +87,23 @@ class Result:
         self.sensitive = bool(sensitive)
         self.source = source or "none"
         self.stale = bool(stale)
+        # The category (read/write/...) of the permission when this service knows it: lets a caller apply the
+        # "no stale ownership for writes" rule to a follow-up check. None = unknown (treated as a write).
+        self.category = category
+        # Why a denial happened when that must NOT be told to the caller (e.g. "unowned" vs "another tenant's"):
+        # audit-only. Private, and left out of repr() and to_dict(), so it cannot leak through a log or a
+        # serialisation of the result; only the audit emitter reads it.
+        self._audit_detail = detail
+
+    _PUBLIC = ("allow", "reason", "status", "tenant_id", "via_tenant", "roles", "sensitive", "source", "stale", "tenant_source", "category")
+
+    def to_dict(self):
+        """The serialisable form of the decision (no principal object, no audit detail)."""
+        return {k: getattr(self, k) for k in self._PUBLIC}
 
     def evolve(self, **fields):
-        base = {s: getattr(self, s) for s in self.__slots__ if s != "status"}
+        base = {s: getattr(self, s) for s in self.__slots__ if s not in ("status", "_audit_detail")}
+        base["detail"] = self._audit_detail
         base.update(fields)
         return Result(**base)
 
@@ -205,7 +220,7 @@ class Auth:
         self._emit({
             "type": "auth.decision", "ts": _iso(self.config.now()), "service": self.config.service or None,
             "permission": permission, "allow": res.allow, "reason": res.reason, "source": res.source,
-            "stale": res.stale, "tenant_id": res.tenant_id, "via_tenant": res.via_tenant, "tenant_source": res.tenant_source,
+            "stale": res.stale, "tenant_id": res.tenant_id, "via_tenant": res.via_tenant, "tenant_source": res.tenant_source, "detail": res._audit_detail,
             "caller_service": res.principal.service if res.principal and res.principal.kind == "service" else None,
             "actor": res.principal.actor() if res.principal else None,
             "key_id": res.principal.key_id if res.principal else None, "run_id": request_id,
@@ -262,6 +277,11 @@ class Auth:
             return {"ok": False, "reason": denied, "status": status_for(denied, False)}
         if not defer:
             return {"ok": True, "principal": principal}
+        return await self._verify_deferred(cred, principal)
+
+    async def _verify_deferred(self, cred, base):
+        """A credential only the platform can verify (agent/guest/MCP keys, audience tokens): POST
+        /v1/principals/resolve. -> {ok, principal} or {ok: False, reason, status}"""
         try:
             body = {"audience_token": cred.raw} if cred.type == "audience" else {"credential": cred.raw}
             res = await self.client.resolve(body)
@@ -272,7 +292,7 @@ class Auth:
                 return {"ok": False, "reason": reason, "status": status_for(reason, False)}
             if res.get("valid") is not True or not isinstance(res.get("principal"), dict):
                 return {"ok": False, "reason": "platform_unavailable", "status": 503}  # malformed reply: cannot identify anyone
-            return {"ok": True, "principal": self._from_summary(res["principal"], res.get("key_id"), principal)}
+            return {"ok": True, "principal": self._from_summary(res["principal"], res.get("key_id"), base)}
         except PlatformUnavailable:
             return {"ok": False, "reason": "platform_unavailable", "status": 503}
 
@@ -317,6 +337,17 @@ class Auth:
                 return {"tenant": mapped, "source": "org"} if mapped else {"org_unmapped": True}
         return {"tenant": hint, "source": "hint"} if hint else {"tenant": None, "source": None}
 
+    async def _category_of(self, parsed):
+        """The category (read / write / ...) of a permission of THIS service, from the cached snapshot; None when
+        it is not known (another service's permission, or no usable snapshot)."""
+        if not self.cache or parsed["service"] != self.config.service:
+            return None
+        snap = await self.cache.get()
+        if snap.state == "none":
+            return None
+        perm = next((p for p in snap.snapshot["permissions"] if p["action"] == parsed["action"]), None)
+        return perm.get("category") if perm else None
+
     async def _live(self, cred, principal, parsed, resource):
         resource_body = {}
         for field, wire in (("tenant", "tenant_id"), ("brand", "brand_id"), ("domain", "domain"), ("mailbox", "mailbox")):
@@ -356,6 +387,7 @@ class Auth:
             res["allow"], res["reason"] if isinstance(res.get("reason"), str) else "platform_unavailable", principal=p,
             tenant_id=res.get("tenant_id"), via_tenant=res.get("via_tenant"), roles=res.get("roles"),
             sensitive=res.get("sensitive") is True, source="live", tenant_source=resource.get("tenant_source"),
+            stale=bool(resource.get("owner_stale")), category=resource.get("category"),
         )
 
     async def _decide(self, headers=None, credential=None, permission=None, resource=None, request=None):
@@ -379,20 +411,37 @@ class Auth:
             if principal.kind == "service":
                 return Result(False, "service_principal_not_granted", principal=principal)
 
-            # tenant_of: the tenant is whoever OWNS the object about to be touched (platform registry). Unowned or
-            # unreadable => denied here; an explicit tenant that disagrees with the owner => tenant_mismatch.
+            # tenant_of: the tenant is whoever OWNS the object about to be touched (platform registry).
+            #  - The caller must be VERIFIED before anything about ownership is evaluated, so an unverified caller
+            #    can never use this as an "is this id owned?" oracle: a credential only the platform can verify
+            #    (keys, audience tokens) is resolved first, and a failure there is the ONLY thing such a caller learns.
+            #  - One caller-visible answer for "nobody owns it" and "it belongs to another tenant" (no_permission, the
+            #    same answer a member of nothing gets for any object): whether an id exists is not told to someone who
+            #    may not act on it. The distinction goes to the audit event only (event `detail`).
+            #  - No stale ownership for a write: a stale answer could still name the previous owner.
             explicit = resource.get("tenant")
             owner_source = None
+            owner_stale = False
+            category = None
             if resource.get("tenant_of"):
+                if defer:
+                    v = await self._verify_deferred(cred, principal)
+                    if not v["ok"]:
+                        return Result(False, v["reason"], principal=principal)
+                    principal = v["principal"]
                 lk = await self.tenant_for(resource["tenant_of"].get("kind"), resource["tenant_of"].get("local_id"))
                 if not lk["ok"]:
                     return Result(False, "platform_unavailable", principal=principal)
+                category = await self._category_of(parsed)
+                if lk["stale"] and category != "read":
+                    return Result(False, "platform_unavailable", principal=principal, category=category)
                 if lk["tenant_id"] is None:
-                    return Result(False, "resource_not_owned", principal=principal)
+                    return Result(False, "no_permission", principal=principal, category=category, detail="resource_not_owned")
                 if explicit and str(explicit).lower() != str(lk["tenant_id"]).lower():
-                    return Result(False, "tenant_mismatch", principal=principal)
+                    return Result(False, "no_permission", principal=principal, category=category, detail="tenant_mismatch")
                 explicit = lk["tenant_id"]
                 owner_source = "resource"
+                owner_stale = lk["stale"]
             picked = await self._select_tenant(explicit, resource.get("tenant_hint"), principal, request)
             if owner_source and picked.get("source") == "explicit":
                 picked["source"] = owner_source
@@ -407,7 +456,7 @@ class Auth:
             if tenant and not _UUID_RE.fullmatch(str(tenant)):
                 return Result(False, "tenant_not_found", principal=principal)
             scoped = {k: v for k, v in resource.items() if k not in ("tenant_hint", "tenant_of")}
-            scoped.update(tenant=tenant, tenant_source=tenant_source)
+            scoped.update(tenant=tenant, tenant_source=tenant_source, owner_stale=owner_stale, category=category)
 
             offline_eligible = (
                 cred.type == "clerk" and self.cache is not None and parsed["service"] == cfg.service and tenant is not None
@@ -428,8 +477,9 @@ class Auth:
             p = principal.evolve(tenant=d["tenant_id"], ancestry=d["ancestry"], roles=d["roles"], permissions=d["permissions"])
             return Result(
                 d["allow"], d["reason"], principal=p, tenant_id=d["tenant_id"], via_tenant=d["via_tenant"],
-                roles=d["roles"], sensitive=d["sensitive"], source="offline", stale=snap.state == "stale",
-                tenant_source=tenant_source,
+                roles=d["roles"], sensitive=d["sensitive"], source="offline",
+                stale=snap.state == "stale" or owner_stale, tenant_source=tenant_source,
+                category=perm.get("category") if perm else category,
             )
         except asyncio.CancelledError:
             raise
@@ -599,26 +649,32 @@ class Auth:
             self.config.logger.error(f"auth: unexpected {type(err).__name__} in resources_for")
             return self._unavailable()
 
-    async def authorize_resource_in_tenant(self, decision=None, kind=None, local_id=None):
+    async def authorize_resource_in_tenant(self, decision=None, kind=None, local_id=None, write=None):
         """"Is the object I am about to touch in the tenant this request was decided for?" Run AFTER a
-        successful authorize(): `decision` is its result. Deny by default: an unowned object is
-        resource_not_owned, a different tenant is tenant_mismatch, an unreadable registry is a 503."""
+        successful authorize(): `decision` is its result. Deny by default, with ONE caller-visible reason
+        (no_permission) for an unowned object, another tenant's object and a missing decision (the detail goes
+        to the audit event only); an unreadable registry is a 503. For a WRITE (anything but a known read;
+        `write` overrides the decision's category) a stale ownership answer is a 503 too."""
         try:
             principal = getattr(decision, "principal", None)
             if decision is None or getattr(decision, "allow", None) is not True or not decision.tenant_id:
-                # no decision to compare against: refuse, never assume
-                res = Result(False, "tenant_mismatch", principal=principal)
+                # nothing to compare against: refuse, never assume
+                res = Result(False, "no_permission", principal=principal, detail="no_decision")
             else:
                 lk = await self.tenant_for(kind, local_id)
+                is_write = write if write is not None else getattr(decision, "category", None) != "read"
                 if not lk["ok"]:
                     res = Result(False, "platform_unavailable", principal=principal)
+                elif lk["stale"] and is_write:
+                    res = Result(False, "platform_unavailable", principal=principal)
                 elif lk["tenant_id"] is None:
-                    res = Result(False, "resource_not_owned", principal=principal, tenant_id=decision.tenant_id)
+                    res = Result(False, "no_permission", principal=principal, tenant_id=decision.tenant_id, detail="resource_not_owned")
                 elif str(lk["tenant_id"]).lower() != str(decision.tenant_id).lower():
-                    res = Result(False, "tenant_mismatch", principal=principal, tenant_id=decision.tenant_id)
+                    res = Result(False, "no_permission", principal=principal, tenant_id=decision.tenant_id, detail="tenant_mismatch")
                 else:
                     res = Result(True, "allowed", principal=principal, tenant_id=decision.tenant_id, via_tenant=decision.via_tenant,
-                                 roles=decision.roles, source="offline", stale=lk["stale"], tenant_source="resource")
+                                 roles=decision.roles, source="offline", stale=lk["stale"], tenant_source="resource",
+                                 category=getattr(decision, "category", None))
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001

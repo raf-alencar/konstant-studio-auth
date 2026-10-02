@@ -16,6 +16,7 @@ const JWKS_URL = 'http://jwks.vectors.test/jwks.json';
 const world = new World();
 
 async function setup(c, keys) {
+  const events = [];
   const fake = new FakePlatform(world, keys, { jwksUrl: JWKS_URL });
   let clock = world.nowMs;
   const idOf = (ref) => world.id('tenant', ref);
@@ -31,8 +32,9 @@ async function setup(c, keys) {
     fetch: fake.fetch,
     logger: silent,
     tenantResolver: c.ask.resolver_tenant ? () => idOf(c.ask.resolver_tenant) : null,
+    onEvent: (e) => events.push(e),
   });
-  return { fake, auth, advance: (s) => { clock += s * 1000; }, now: () => clock };
+  return { fake, auth, events, advance: (s) => { clock += s * 1000; }, now: () => clock };
 }
 
 async function headersFor(c, keys, now) {
@@ -66,8 +68,9 @@ test('shared vectors', async (t) => {
       continue;
     }
     await t.test(c.id, async () => {
-      const { fake, auth, advance, now } = await setup(c, keys);
+      const { fake, auth, advance, now, events } = await setup(c, keys);
       const exp = c.expect;
+      if (c.omit_resources) fake.omitResources = true; // a platform whose snapshot has no registry field
       const isServiceKey = !!c.who.key && world.spec.keys.find((k) => k.ref === c.who.key).kind === 'service';
       if (c.resolve_only) {
         // identity only: the library asked each accepted caller service, and every failure is the same uniform answer
@@ -99,6 +102,8 @@ test('shared vectors', async (t) => {
       assert.equal(d.source, exp.source ?? 'none');
       assert.equal(d.stale, !!exp.stale);
       if (exp.tenant_source !== undefined) assert.equal(d.tenantSource, exp.tenant_source);
+      if (exp.audit_detail !== undefined) assert.equal(events.at(-1).detail, exp.audit_detail, 'the audit event keeps the distinction the caller is not told');
+      assert.equal('auditDetail' in JSON.parse(JSON.stringify(d)), false, 'and it is not part of what the result serialises to');
       if (!coarse) assert.equal(d.tenantId, world.id('tenant', exp.tenant));
       assert.equal(d.viaTenant, world.id('tenant', exp.via_tenant));
       if (exp.allow) assert.deepEqual([...d.roles].sort(), exp.roles);
@@ -109,7 +114,8 @@ test('shared vectors', async (t) => {
       // where the library correctly TRIES the call and it fails.
       if (c.platform !== 'down') {
         assert.equal(fake.count('POST', '/v1/authorize'), exp.source === 'live' ? 1 : 0, 'authorize calls');
-        if (!isServiceKey) assert.equal(fake.count('POST', '/v1/principals/resolve'), 0, 'decisions never need a separate resolve');
+        // (a key-based caller using tenantOf is verified first, which is exactly one resolve)
+        if (!isServiceKey && !(c.ask.tenant_of && c.who.key)) assert.equal(fake.count('POST', '/v1/principals/resolve'), 0, 'decisions never need a separate resolve');
       }
     });
   }

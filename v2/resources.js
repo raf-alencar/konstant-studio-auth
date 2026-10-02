@@ -45,21 +45,29 @@ function normalizeKind(kind) {
   return typeof kind === 'string' && KIND_RE.test(kind) ? kind : null;
 }
 
-// Order by Unicode code point (what Python's sorted() does). JavaScript's default sort compares UTF-16 code
-// units, which disagrees with it for characters outside the BMP; the lists must read the same in both.
+// Order by Unicode code point (what Python's sorted() does), without allocating per comparison: JavaScript's
+// default sort compares UTF-16 code units, which disagrees with code point order only for supplementary
+// characters, so map the surrogate range above the high BMP (0xE000-0xFFFF) and compare unit by unit.
+const unit = (c) => (c >= 0xe000 ? c - 0x800 : c >= 0xd800 ? c + 0x2000 : c);
 function byCodePoint(a, b) {
-  const x = Array.from(a);
-  const y = Array.from(b);
-  for (let i = 0; i < Math.min(x.length, y.length); i++) {
-    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
-    if (d !== 0) return d;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a.charCodeAt(i);
+    const y = b.charCodeAt(i);
+    if (x !== y) return unit(x) - unit(y);
   }
-  return x.length - y.length;
+  return a.length - b.length;
 }
 
 function buildIndex(snapshot, { maxResources, logger }) {
   const index = { supported: true, tooLarge: false, owners: new Map(), byTenant: new Map(), count: 0 };
   const tenants = Array.isArray(snapshot?.tenants) ? snapshot.tenants : [];
+  // A tenant without a usable id cannot own anything, and silently skipping it would let a LATER tenant take
+  // its ids as if nobody had them: the whole snapshot is then unsupported (unavailable), never "unowned".
+  if (tenants.some((t) => typeof t?.id !== 'string' || t.id === '')) {
+    index.supported = false;
+    return index;
+  }
   // Zero tenants proves nothing about support, and cannot own anything either way. With tenants, every one
   // of them must carry the field: a platform that has C0f always sends it (an empty list when none).
   if (tenants.length > 0 && tenants.some((t) => !Array.isArray(t.resources))) {
@@ -68,35 +76,35 @@ function buildIndex(snapshot, { maxResources, logger }) {
   }
   let warnedConflict = false;
   for (const t of tenants) {
-    for (const r of t.resources || []) {
+    const tkey = t.id.toLowerCase();
+    for (const r of t.resources) {
       const kind = normalizeKind(r?.kind);
       const id = normalizeId(r?.local_id);
       if (kind === null || id === null) continue; // a malformed entry can never grant ownership
+      let byId = index.owners.get(kind);
+      if (!byId) index.owners.set(kind, (byId = new Map()));
+      const have = byId.get(id);
+      if (have === t.id) continue; // the same row repeated: one resource (and one against the cap)
       if (++index.count > maxResources) {
         index.tooLarge = true;
         logger.error(`resource index larger than ${maxResources} entries: lookups are refused`);
         return { ...index, owners: new Map(), byTenant: new Map() };
       }
-      let byId = index.owners.get(kind);
-      if (!byId) index.owners.set(kind, (byId = new Map()));
-      const have = byId.get(id);
       if (have === undefined) byId.set(id, t.id);
-      else if (have !== t.id) {
+      else {
         byId.set(id, CONFLICT);
         if (!warnedConflict) {
           warnedConflict = true;
           logger.error('the snapshot gives one local id to two tenants: that id is refused (deny) until the platform is fixed');
         }
       }
-      const tkey = String(t.id).toLowerCase();
       let kinds = index.byTenant.get(tkey);
       if (!kinds) index.byTenant.set(tkey, (kinds = new Map()));
-      let ids = kinds.get(kind);
-      if (!ids) kinds.set(kind, (ids = []));
-      ids.push(id);
+      let list = kinds.get(kind);
+      if (!list) kinds.set(kind, (list = { ids: [], sorted: false }));
+      list.ids.push(id); // sorted lazily, on the first resourcesFor that needs it: tenantFor never pays for it
     }
   }
-  for (const kinds of index.byTenant.values()) for (const ids of kinds.values()) ids.sort(byCodePoint);
   return index;
 }
 
@@ -111,7 +119,13 @@ function ownerOf(index, kind, localId) {
 function idsOf(index, tenantId, kind) {
   const k = normalizeKind(kind);
   if (k === null || typeof tenantId !== 'string') return [];
-  return [...(index.byTenant.get(tenantId.toLowerCase())?.get(k) || [])];
+  const list = index.byTenant.get(tenantId.toLowerCase())?.get(k);
+  if (!list) return [];
+  if (!list.sorted) {
+    list.ids.sort(byCodePoint);
+    list.sorted = true;
+  }
+  return [...list.ids];
 }
 
 module.exports = { buildIndex, ownerOf, idsOf, normalizeId, normalizeKind };

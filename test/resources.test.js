@@ -129,7 +129,7 @@ test('Express tenantOf: the object names the tenant; unowned and unreadable are 
   assert.deepEqual([other.status, (await other.json()).reason], [403, 'no_permission']);
   const unowned = await get('/brands/nope', alice);
   const body = await unowned.json();
-  assert.deepEqual([unowned.status, body.reason], [403, 'resource_not_owned']);
+  assert.deepEqual([unowned.status, body.reason], [403, 'no_permission']);
   assert.deepEqual(Object.keys(body).sort(), ['error', 'reason'], 'nothing about who owns what leaks in a denial');
   fake.omitResources = true;
   auth.cache.invalidate();
@@ -143,11 +143,11 @@ test('Express requireResourceInTenant: same tenant passes; another tenant, unown
   const bob = await token('bob'); // a member of acme AND globex
   assert.equal((await get(`/t/${ACME}/brands/brand-a`, bob)).status, 200);
   const mismatch = await get(`/t/${ACME}/brands/brand-g`, bob); // allowed in acme, but the object is globex's
-  assert.deepEqual([mismatch.status, (await mismatch.json()).reason], [403, 'tenant_mismatch']);
+  assert.deepEqual([mismatch.status, (await mismatch.json()).reason], [403, 'no_permission'], 'the caller is not told that the id exists elsewhere');
   const unowned = await get(`/t/${ACME}/brands/nope`, bob);
-  assert.deepEqual([unowned.status, (await unowned.json()).reason], [403, 'resource_not_owned']);
+  assert.deepEqual([unowned.status, (await unowned.json()).reason], [403, 'no_permission']);
   const noDecision = await get('/no-decision/brand-a', bob); // misuse: nothing was decided first
-  assert.deepEqual([noDecision.status, (await noDecision.json()).reason], [403, 'tenant_mismatch'], 'refused, never assumed');
+  assert.deepEqual([noDecision.status, (await noDecision.json()).reason], [403, 'no_permission'], 'refused, never assumed');
   fake.omitResources = true;
   auth.cache.invalidate();
   assert.equal((await get(`/t/${ACME}/brands/brand-a`, bob)).status, 503);
@@ -221,4 +221,134 @@ test('kinds the registry cannot hold own nothing even if a snapshot lists them',
   assert.equal((await auth.tenantFor('brand', 'x')).tenantId, ACME);
   assert.equal((await auth.tenantFor('Brand', 'x')).tenantId, null, 'asking with an unholdable kind is refused, whatever the snapshot says');
   assert.deepEqual((await auth.resourcesFor(ACME, 'Brand')).ids, []);
+});
+
+// ---- CoS verdict 4 ---------------------------------------------------------------------------------------------
+test('V4-1: a garbage key learns nothing about ownership: the same 401 for an owned and an unowned id, and the registry is never consulted', async (t) => {
+  const { auth, fake } = await build();
+  const app = express();
+  app.get('/brands/:id', auth.express.requirePermission('docs:read', { tenantOf: { kind: 'brand', id: (req) => req.params.id } }), (req, res) => res.json({}));
+  const server = await new Promise((r) => { const x = app.listen(0, '127.0.0.1', () => r(x)); });
+  t.after(() => server.close());
+  const ask = async (path, key) => { const r = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { 'x-api-key': key } }); return [r.status, await r.json()]; };
+  const garbage = 'stga_' + 'x'.repeat(40);
+  const owned = await ask('/brands/brand-a', garbage);
+  const unowned = await ask('/brands/nope', garbage);
+  assert.deepEqual(owned, [401, { error: 'Unauthorized', reason: 'key_not_found' }]);
+  assert.deepEqual(unowned, owned, 'identical: nothing about the id');
+  assert.equal(fake.count('GET', '/v1/authorize/snapshot'), 0, 'the registry was not even read for an unverified caller');
+  // ...nor does a registry outage turn the credential failure into a 503
+  fake.omitResources = true;
+  assert.deepEqual(await ask('/brands/brand-a', garbage), owned);
+  // audience tokens are deferred to the platform too
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const aud = `${b64({ alg: 'EdDSA' })}.${b64({ iss: 'stighive-platform' })}.c2ln`;
+  fake.override = (path) => (path === '/v1/principals/resolve' ? { valid: false, reason: 'token_invalid' } : undefined);
+  const r = await fetch(`http://127.0.0.1:${server.address().port}/brands/brand-a`, { headers: { authorization: `Bearer ${aud}` } });
+  assert.deepEqual([r.status, (await r.json()).reason], [401, 'token_invalid']);
+});
+
+test('V4-2: an authenticated user gets the SAME response for an unowned id and for another tenant\'s id', async (t) => {
+  const { auth, token } = await build();
+  const app = express();
+  app.get('/brands/:id', auth.express.requirePermission('docs:read', { tenantOf: { kind: 'brand', id: (req) => req.params.id } }), (req, res) => res.json({}));
+  const server = await new Promise((r) => { const x = app.listen(0, '127.0.0.1', () => r(x)); });
+  t.after(() => server.close());
+  const h = { authorization: `Bearer ${await token('alice')}` }; // a member of acme only
+  const ask = async (id) => { const r = await fetch(`http://127.0.0.1:${server.address().port}/brands/${id}`, { headers: h }); return [r.status, [...r.headers].filter(([k]) => /^(www-authenticate|retry-after)$/.test(k)), await r.json()]; };
+  assert.deepEqual(await ask('brand-g'), await ask('does-not-exist'), "globex's brand and a brand nobody owns look the same");
+});
+
+test('V4-2: the audit event keeps the distinction; the result does not carry it', async () => {
+  const events = [];
+  const { auth, token } = await build({ onEvent: (e) => events.push(e) });
+  const h = { authorization: `Bearer ${await token('alice')}` };
+  const unowned = await auth.authorize({ headers: h, permission: 'docs:read', resource: { tenantOf: { kind: 'brand', localId: 'nope' } } });
+  const other = await auth.authorize({ headers: h, permission: 'docs:read', resource: { tenantOf: { kind: 'brand', localId: 'brand-g' } } });
+  const conflict = await auth.authorize({ headers: h, permission: 'docs:read', resource: { tenant: ACME, tenantOf: { kind: 'brand', localId: 'brand-g' } } });
+  assert.deepEqual([unowned.reason, other.reason, conflict.reason], ['no_permission', 'no_permission', 'no_permission']);
+  assert.deepEqual(events.map((e) => e.detail), ['resource_not_owned', null, 'tenant_mismatch']);
+  for (const r of [unowned, other, conflict]) assert.ok(!JSON.stringify(r).includes('resource_not_owned') && !JSON.stringify(r).includes('tenant_mismatch'));
+  assert.ok(!JSON.stringify(events).includes('brand-g'), 'and still no local ids in the audit');
+});
+
+test('V4-3: the post-decision helper refuses stale ownership for a write and serves it for a read', async () => {
+  const { auth, fake, token, tick } = await build();
+  const h = { authorization: `Bearer ${await token('alice')}` };
+  const read = await auth.authorize({ headers: h, permission: 'docs:read', resource: { tenant: ACME } });
+  const write = await auth.authorize({ headers: h, permission: 'docs:write', resource: { tenant: ACME } });
+  assert.deepEqual([read.category, write.category], ['read', 'write'], 'the decision knows its permission category');
+  fake.down = true;
+  tick(120); // past the TTL, inside the stale window: the registry answer is stale
+  const r = await auth.authorizeResourceInTenant({ decision: read, kind: 'brand', localId: 'brand-a' });
+  assert.deepEqual([r.allow, r.stale], [true, true], 'a read is served from the stale answer and says so');
+  const w = await auth.authorizeResourceInTenant({ decision: write, kind: 'brand', localId: 'brand-a' });
+  assert.deepEqual([w.allow, w.reason, w.status], [false, 'platform_unavailable', 503], 'a write is refused');
+  const forced = await auth.authorizeResourceInTenant({ decision: read, kind: 'brand', localId: 'brand-a', write: true });
+  assert.equal(forced.allow, false, 'an explicit write flag overrides the decision category');
+  const unknown = await auth.authorizeResourceInTenant({ decision: { ...read, category: null }, kind: 'brand', localId: 'brand-a' });
+  assert.equal(unknown.allow, false, 'an unknown category counts as a write');
+});
+
+test('V4-3: an invalidated snapshot whose refresh fails does not grant the old owner a write', async () => {
+  const { auth, fake, token } = await build();
+  const h = { authorization: `Bearer ${await token('alice')}` };
+  await auth.cache.get();
+  auth.cache.invalidate(); // a change event said the registry moved
+  fake.down = true; // ...and the refresh fails
+  const w = await auth.authorize({ headers: h, permission: 'docs:write', resource: { tenantOf: { kind: 'brand', localId: 'brand-a' } } });
+  assert.deepEqual([w.allow, w.reason], [false, 'platform_unavailable']);
+  const r = await auth.authorize({ headers: h, permission: 'docs:read', resource: { tenantOf: { kind: 'brand', localId: 'brand-a' } } });
+  assert.deepEqual([r.allow, r.stale], [true, true], 'a read still works and is marked stale');
+});
+
+test('V4-4: a snapshot tenant without an id makes the snapshot unsupported (it must not read as unowned and let a later tenant take its ids)', async () => {
+  const { auth, fake } = await build();
+  fake.override = (path) => (path === '/v1/authorize/snapshot' ? snapshotWith([
+    { ...tenant('x', [{ kind: 'brand', local_id: 'shared' }]), id: undefined },
+    tenant(GLOBEX, [{ kind: 'brand', local_id: 'shared' }]),
+  ]) : undefined);
+  assert.deepEqual([(await auth.tenantFor('brand', 'shared')).ok, (await auth.resourcesFor(GLOBEX, 'brand')).ok], [false, false]);
+  for (const bad of [null, '', 5, {}]) {
+    fake.override = (path) => (path === '/v1/authorize/snapshot' ? snapshotWith([{ ...tenant('x', []), id: bad }, tenant(GLOBEX, [])]) : undefined);
+    auth.cache.invalidate();
+    assert.equal((await auth.tenantFor('brand', 'a')).ok, false, JSON.stringify(bad));
+  }
+});
+
+test('V4-5: repeated rows count once (toward the cap too) and list once', async () => {
+  const { auth, fake } = await build({ maxResources: 3 });
+  const row = { kind: 'brand', local_id: 'dup' };
+  fake.override = (path) => (path === '/v1/authorize/snapshot' ? snapshotWith([tenant(ACME, [row, row, row, row, row, { kind: 'brand', local_id: 'two' }, { kind: 'brand', local_id: 'three' }])]) : undefined);
+  assert.equal((await auth.tenantFor('brand', 'dup')).tenantId, ACME, 'five copies of one row stay under a cap of three');
+  assert.deepEqual((await auth.resourcesFor(ACME, 'brand')).ids, ['dup', 'three', 'two']);
+});
+
+test('V4-6: the code-point comparator agrees with a reference ordering, and ids are sorted lazily', async () => {
+  const { buildIndex, idsOf } = require('../v2/resources');
+  const alphabet = ['a', 'B', '\u00e9', '\u0100', '\ud7ff', '\ue000', '\uff21', '\uffff', '\u{10000}', '\u{1F600}', '\u{10FFFF}'];
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const ids = new Set();
+  while (ids.size < 400) ids.add(Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => alphabet[Math.floor(rnd() * alphabet.length)]).join(''));
+  const reference = [...ids].sort((a, b) => { const x = Array.from(a); const y = Array.from(b); for (let i = 0; i < Math.min(x.length, y.length); i++) { const d = x[i].codePointAt(0) - y[i].codePointAt(0); if (d) return d; } return x.length - y.length; });
+  const index = buildIndex({ tenants: [{ id: 't', resources: [...ids].map((local_id) => ({ kind: 'k', local_id })) }] }, { maxResources: 1000, logger: silent });
+  assert.equal(index.byTenant.get('t').get('k').sorted, false, 'building the index sorts nothing');
+  assert.deepEqual(idsOf(index, 't', 'k'), reference);
+  assert.equal(index.byTenant.get('t').get('k').sorted, true);
+});
+
+test('V4-3: a key-based WRITE is refused on stale ownership even when /v1/authorize still works (only the registry refresh is failing)', async () => {
+  const { auth, fake, tick } = await build();
+  const key = { 'x-api-key': world.rawKey(world.spec.keys.find((k) => k.ref === 'agent_acme_active')) };
+  await auth.cache.get(); // registry loaded
+  tick(120); // past the TTL
+  // the snapshot route fails, everything else (resolve, authorize) answers
+  fake.override = (path) => (path === '/v1/authorize/snapshot' ? new Response('{}', { status: 503 }) : undefined);
+  fake.live = { allow: true, reason: 'allowed', tenant: 'acme', roles: ['operator'] };
+  const write = await auth.authorize({ headers: key, permission: 'docs:write', resource: { tenantOf: { kind: 'brand', localId: 'brand-a' } } });
+  assert.deepEqual([write.allow, write.reason, write.status], [false, 'platform_unavailable', 503], 'the old owner cannot be granted a write');
+  assert.equal(fake.count('POST', '/v1/authorize'), 0, 'never even asked the platform to decide on stale ownership');
+  const read = await auth.authorize({ headers: key, permission: 'docs:read', resource: { tenantOf: { kind: 'brand', localId: 'brand-a' } } });
+  assert.deepEqual([read.allow, read.source, read.stale], [true, 'live', true], 'a read is decided and says the ownership was stale');
 });

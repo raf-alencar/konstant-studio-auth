@@ -56,8 +56,11 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     if c["ask"].get("resolver_tenant"):
         tid = world.id("tenant", c["ask"]["resolver_tenant"])
         resolver = lambda req, principal: tid  # noqa: E731
-    h = make_harness(tenant_resolver=resolver)
+    events = []
+    h = make_harness(tenant_resolver=resolver, on_event=events.append)
     exp = c["expect"]
+    if c.get("omit_resources"):
+        h.fake.omit_resources = True  # a platform whose snapshot has no registry field
     key = next((k for k in world.spec["keys"] if k["ref"] == c["who"].get("key")), None)
     is_service_key = bool(key and key["kind"] == "service")
 
@@ -96,6 +99,11 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     assert d.via_tenant == world.id("tenant", exp.get("via_tenant"))
     if exp["allow"]:
         assert sorted(d.roles) == exp["roles"]
+    if "audit_detail" in exp:
+        assert events[-1]["detail"] == exp["audit_detail"], "the audit event keeps the distinction the caller is not told"
+    # ...and it is not part of what the result serialises to
+    assert "resource_not_owned" not in repr(d) and "tenant_mismatch" not in repr(d)
+    assert "detail" not in d.to_dict() and "audit_detail" not in d.to_dict()
     if exp.get("tenant_source") is not None:
         assert d.tenant_source == exp["tenant_source"]
     if "sensitive" in exp and not coarse:
@@ -106,7 +114,8 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     # where the library correctly TRIES the call and it fails.
     if c.get("platform") != "down":
         assert h.fake.count("POST", "/v1/authorize") == (1 if exp.get("source") == "live" else 0), "authorize calls"
-        if not is_service_key:
+        # (a key-based caller using tenant_of is verified first, which is exactly one resolve)
+        if not is_service_key and not (c["ask"].get("tenant_of") and c["who"].get("key")):
             assert h.fake.count("POST", "/v1/principals/resolve") == 0, "decisions never need a separate resolve"
 
 

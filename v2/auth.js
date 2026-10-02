@@ -84,13 +84,20 @@ function createAuth(opts = {}) {
 
   function result(fields) {
     const allow = fields.allow === true; // exactly true: a truthy string must never read as a yes
-    return {
+    const out = {
       allow, reason: fields.reason, status: statusFor(fields.reason, allow),
       principal: fields.principal ?? null, tenantId: fields.tenantId ?? null,
       viaTenant: fields.viaTenant ?? null, roles: fields.roles ?? [],
       sensitive: !!fields.sensitive, source: fields.source ?? 'none',
       stale: !!fields.stale, tenantSource: fields.tenantSource ?? null,
+      // The category (read/write/...) of the permission when this service knows it: lets a caller apply the
+      // "no stale ownership for writes" rule to a follow-up check. null = unknown (treated as a write).
+      category: fields.category ?? null,
     };
+    // Why a denial happened when that must NOT be told to the caller (e.g. "unowned" vs "another tenant's"):
+    // audit-only, non-enumerable, so it cannot leak through JSON, a spread or a log of the result.
+    if (fields.detail) Object.defineProperty(out, 'auditDetail', { value: fields.detail, enumerable: false });
+    return out;
   }
 
   // The audit event carries ids and the decision only: never a credential,
@@ -99,7 +106,7 @@ function createAuth(opts = {}) {
     emit({
       type: 'auth.decision', ts: new Date(cfg.now()).toISOString(), service: cfg.service || null,
       permission, allow: res.allow, reason: res.reason, source: res.source, stale: res.stale,
-      tenant_id: res.tenantId, via_tenant: res.viaTenant, tenant_source: res.tenantSource,
+      tenant_id: res.tenantId, via_tenant: res.viaTenant, tenant_source: res.tenantSource, detail: res.auditDetail ?? null,
       caller_service: res.principal?.kind === 'service' ? res.principal.service : null,
       actor: res.principal ? res.principal.actor() : null,
       key_id: res.principal?.keyId ?? null, run_id: requestId ?? null,
@@ -154,21 +161,27 @@ function createAuth(opts = {}) {
   }
 
   // POST /v1/principals/resolve for keys, so identity is available without a decision.
-  async function resolvePrincipal({ headers, credential } = {}) {
-    const cred = credential ?? extract(headers);
-    const found = await principalFrom(cred);
-    if (found.denied) return { ok: false, reason: found.denied, status: statusFor(found.denied, false) };
-    if (!found.deferToPlatform) return { ok: true, principal: found.principal };
+  // A credential only the PLATFORM can verify (agent / guest / MCP keys, audience tokens): ask it who this is.
+  // -> { ok: true, principal } | { ok: false, reason, status }
+  async function verifyDeferred(cred, base) {
     try {
       const body = cred.type === 'audience' ? { audience_token: cred.raw } : { credential: cred.raw };
       const res = await client.resolve(body);
       if (res.valid === false) return { ok: false, reason: typeof res.reason === 'string' ? res.reason : 'key_not_found', status: statusFor(res.reason, false) };
       if (res.valid !== true || !res.principal) return { ok: false, reason: 'platform_unavailable', status: 503 }; // malformed reply: cannot identify anyone
-      return { ok: true, principal: fromPlatformSummary(res.principal, res.key_id, found.principal) };
+      return { ok: true, principal: fromPlatformSummary(res.principal, res.key_id, base) };
     } catch (err) {
       if (err instanceof PlatformUnavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
       throw err;
     }
+  }
+
+  async function resolvePrincipal({ headers, credential } = {}) {
+    const cred = credential ?? extract(headers);
+    const found = await principalFrom(cred);
+    if (found.denied) return { ok: false, reason: found.denied, status: statusFor(found.denied, false) };
+    if (!found.deferToPlatform) return { ok: true, principal: found.principal };
+    return verifyDeferred(cred, found.principal);
   }
 
   function fromPlatformSummary(p, keyId, base) {
@@ -246,8 +259,17 @@ function createAuth(opts = {}) {
     return result({
       allow: res.allow, reason: typeof res.reason === 'string' ? res.reason : 'platform_unavailable', principal: p,
       tenantId: res.tenant_id, viaTenant: res.via_tenant, roles: res.roles, sensitive: res.sensitive === true, source: 'live',
-      tenantSource: resource.tenantSource ?? null,
+      tenantSource: resource.tenantSource ?? null, stale: !!resource.ownerStale, category: resource.category ?? null,
     });
+  }
+
+  // The category (read / write / ...) of a permission of THIS service, from the cached snapshot; null when it
+  // is another service's permission or the snapshot cannot say (then it is treated as a write).
+  async function categoryOf(parsed) {
+    if (!cache || parsed.service !== cfg.service) return null;
+    const snap = await cache.get();
+    if (snap.state === 'none') return null;
+    return snap.snapshot.permissions.find((p) => p.action === parsed.action)?.category ?? null;
   }
 
   // Decision without the audit event (so wrappers that add checks emit exactly one). `headers` is anything with .get() or a plain object;
@@ -260,7 +282,7 @@ function createAuth(opts = {}) {
 
       const found = await principalFrom(cred);
       if (found.denied) return result({ allow: false, reason: found.denied });
-      const principal = found.principal;
+      let principal = found.principal;
 
       // A service principal holds no tenant permissions: a tenant is not part of one, and the platform
       // grants it nothing (it answers service_principal_not_granted, so this offline answer is the same).
@@ -269,19 +291,35 @@ function createAuth(opts = {}) {
         return result({ allow: false, reason: 'service_principal_not_granted', principal });
       }
 
-      // tenantOf: the tenant is whoever OWNS the object about to be touched (platform registry). Unowned or
-      // unreadable => denied here; an explicit tenant that disagrees with the owner => tenant_mismatch.
+      // tenantOf: the tenant is whoever OWNS the object about to be touched (platform registry).
+      //  - The caller must be VERIFIED before anything about ownership is evaluated, so an unverified caller
+      //    can never use this as an "is this id owned?" oracle: a credential only the platform can verify
+      //    (keys, audience tokens) is resolved first, and a failure there is the ONLY thing such a caller learns.
+      //  - One caller-visible answer for "nobody owns it" and "it belongs to another tenant" (no_permission, the
+      //    same answer a member of nothing gets for any object): whether an id exists is not told to someone who
+      //    may not act on it. The distinction goes to the audit event only (event `detail`).
+      //  - No stale ownership for a write: a stale answer could still name the previous owner.
       let explicit = resource.tenant;
       let ownerSource = null;
+      let ownerStale = false;
+      let category = null;
       if (resource.tenantOf) {
+        if (found.deferToPlatform) {
+          const v = await verifyDeferred(cred, principal);
+          if (!v.ok) return result({ allow: false, reason: v.reason, principal });
+          principal = v.principal;
+        }
         const lk = await tenantFor(resource.tenantOf.kind, resource.tenantOf.localId);
         if (!lk.ok) return result({ allow: false, reason: 'platform_unavailable', principal });
-        if (lk.tenantId === null) return result({ allow: false, reason: 'resource_not_owned', principal });
+        category = await categoryOf(parsed);
+        if (lk.stale && category !== 'read') return result({ allow: false, reason: 'platform_unavailable', principal, category });
+        if (lk.tenantId === null) return result({ allow: false, reason: 'no_permission', detail: 'resource_not_owned', principal, category });
         if (explicit && String(explicit).toLowerCase() !== String(lk.tenantId).toLowerCase()) {
-          return result({ allow: false, reason: 'tenant_mismatch', principal });
+          return result({ allow: false, reason: 'no_permission', detail: 'tenant_mismatch', principal, category });
         }
         explicit = lk.tenantId;
         ownerSource = 'resource';
+        ownerStale = lk.stale;
       }
       const picked = await selectTenant(explicit, resource.tenantHint, principal, req);
       if (ownerSource && picked.source === 'explicit') picked.source = ownerSource;
@@ -293,7 +331,7 @@ function createAuth(opts = {}) {
       // as an outage (a client mistake must not look like platform_unavailable).
       if (tenant && !UUID_RE.test(String(tenant))) return result({ allow: false, reason: 'tenant_not_found', principal });
       const { tenantHint: _hint, tenantOf: _tenantOf, ...rest } = resource;
-      const scoped = { ...rest, tenant, tenantSource: picked.source };
+      const scoped = { ...rest, tenant, tenantSource: picked.source, ownerStale, category };
 
       const offlineEligible =
         cred.type === 'clerk' && cache && parsed.service === cfg.service && tenant !== null;
@@ -313,7 +351,8 @@ function createAuth(opts = {}) {
       const p = new Principal({ ...principal, tenant: d.tenantId, ancestry: d.ancestry ?? [], roles: d.roles, permissions: d.permissions });
       return result({
           allow: d.allow, reason: d.reason, principal: p, tenantId: d.tenantId, viaTenant: d.viaTenant,
-          roles: d.roles, sensitive: d.sensitive, source: 'offline', stale: snap.state === 'stale', tenantSource: picked.source,
+          roles: d.roles, sensitive: d.sensitive, source: 'offline', stale: snap.state === 'stale' || ownerStale, tenantSource: picked.source,
+          category: perm?.category ?? category,
         });
     } catch (err) {
       // A bug must never read as an allow. Log the class only (messages can echo input).
@@ -404,20 +443,25 @@ function createAuth(opts = {}) {
     }
   }
 
-  // "Is the object I am about to touch in the tenant this request was decided for?" Run AFTER a
-  // successful authorize(): `decision` is its result. Deny by default: an unowned object is
-  // resource_not_owned, a different tenant is tenant_mismatch, an unreadable registry is a 503.
-  async function authorizeResourceInTenant({ decision, kind, localId } = {}) {
+  // "Is the object I am about to touch in the tenant this request was decided for?" Run AFTER a successful
+  // authorize(): `decision` is its result. Deny by default, with ONE caller-visible answer: an object nobody owns
+  // and an object that belongs to another tenant are both `no_permission` (the caller must not learn whether an id
+  // exists elsewhere); the audit event keeps the distinction (`detail`). An unreadable registry is a 503, and for a
+  // WRITE (anything but a known read; `write` overrides the decision's category) a stale ownership answer is a 503
+  // too: it could still name the previous owner.
+  async function authorizeResourceInTenant({ decision, kind, localId, write } = {}) {
     let res;
     try {
       if (!decision || decision.allow !== true || !decision.tenantId) {
-        res = result({ allow: false, reason: 'tenant_mismatch', principal: decision?.principal ?? null }); // no decision to compare against: refuse, never assume
+        res = result({ allow: false, reason: 'no_permission', detail: 'no_decision', principal: decision?.principal ?? null }); // nothing to compare against: refuse, never assume
       } else {
         const lk = await tenantFor(kind, localId);
+        const isWrite = write ?? decision.category !== 'read';
         if (!lk.ok) res = result({ allow: false, reason: 'platform_unavailable', principal: decision.principal });
-        else if (lk.tenantId === null) res = result({ allow: false, reason: 'resource_not_owned', principal: decision.principal, tenantId: decision.tenantId });
-        else if (String(lk.tenantId).toLowerCase() !== String(decision.tenantId).toLowerCase()) res = result({ allow: false, reason: 'tenant_mismatch', principal: decision.principal, tenantId: decision.tenantId });
-        else res = result({ allow: true, reason: 'allowed', principal: decision.principal, tenantId: decision.tenantId, viaTenant: decision.viaTenant, roles: decision.roles, source: 'offline', stale: lk.stale, tenantSource: 'resource' });
+        else if (lk.stale && isWrite) res = result({ allow: false, reason: 'platform_unavailable', principal: decision.principal });
+        else if (lk.tenantId === null) res = result({ allow: false, reason: 'no_permission', detail: 'resource_not_owned', principal: decision.principal, tenantId: decision.tenantId });
+        else if (String(lk.tenantId).toLowerCase() !== String(decision.tenantId).toLowerCase()) res = result({ allow: false, reason: 'no_permission', detail: 'tenant_mismatch', principal: decision.principal, tenantId: decision.tenantId });
+        else res = result({ allow: true, reason: 'allowed', principal: decision.principal, tenantId: decision.tenantId, viaTenant: decision.viaTenant, roles: decision.roles, source: 'offline', stale: lk.stale, tenantSource: 'resource', category: decision.category });
       }
     } catch (err) {
       cfg.logger.error(`auth: unexpected ${err?.name || 'error'} while checking a resource`);

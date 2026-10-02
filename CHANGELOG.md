@@ -4,9 +4,16 @@ Semantic versioning. v1 exports are never removed in a minor release; they are d
 
 ## 0.3.0 — resource lookups (C0c2)
 
+### CoS verdict 4 fixes (rc3)
+- **No anonymous ownership oracle.** With `tenantOf`, a credential only the platform can verify (agent, guest, MCP keys, audience tokens) is verified first; an unverified caller learns the credential outcome only (the same `401` for an owned and an unowned id, and no `503`-before-`401` from the registry).
+- **One caller-visible reason.** An unowned id, an id of another tenant, and a conflicting explicit tenant are all `403 no_permission` (the post-decision helpers too); the audit event keeps the distinction (`detail`), and the returned result does not carry it. (`resource_not_owned` and `tenant_mismatch` are no longer returned to callers.)
+- **No stale ownership for writes.** A stale registry answer is served for reads (the decision says `stale: true`) and refused with `503` for writes and for an unknown permission category; decisions now carry their permission `category`.
+- Hardening: a snapshot tenant without a string `id` makes the snapshot unsupported (never "unowned"); repeated rows are counted and listed once; ids are sorted lazily and without allocating per comparison, so a large tenant no longer blocks the event loop.
+- Docs: with `tenantOf` the owner wins over the Clerk org claim (a user bound to org tenant A who is also a member of B can act on B's objects; membership still required).
+
 ### Added
 - `tenantFor(kind, localId)` and `resourcesFor(tenantId, kind)` (Python: `tenant_for`, `resources_for`): ownership lookups from the cached snapshot's per-tenant `resources` (platform C0f), so adopting repos keep no brand/company-to-tenant mapping. Fail closed (unavailable when the registry cannot be read or the platform has no C0f), `null` for an unowned id, refusal of an id claimed by two tenants, a reverse index built once per snapshot and bounded by `maxResources`.
-- `tenantOf: { kind, id }` scope option (Express, Next.js, FastAPI `tenant_of`): the tenant is the owner of the object about to be touched; unowned is `403 resource_not_owned`, a conflicting explicit tenant `403 tenant_mismatch`, an unreadable registry `503`.
+- `tenantOf: { kind, id }` scope option (Express, Next.js, FastAPI `tenant_of`): the tenant is the owner of the object about to be touched; unowned, another tenant's, or a conflicting explicit tenant is `403 no_permission` (one answer; the audit event keeps the detail), an unreadable registry `503`.
 - `requireResourceInTenant` (Express), `checkResourceInTenant` (Next.js), `require_resource_in_tenant` (FastAPI): after a decision, refuse an object that belongs to another tenant.
 - Shared vectors: 29 lookup cases and 8 `tenantOf` decision cases for both languages.
 
