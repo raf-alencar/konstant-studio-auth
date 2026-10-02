@@ -15,20 +15,46 @@
 //   - a local id the snapshot claims for two tenants (a platform bug) => null (deny), logged once;
 //   - an index larger than `maxResources` => unavailable (memory stays bounded).
 
-const MAX_ID_LENGTH = 256;
+// The canonical id rule, one for both languages (it mirrors what the platform's registry can hold, so
+// anything it could never hold can never be owned and is refused up front):
+//   kind     a lowercase slug, ^[a-z][a-z0-9_-]{0,63}$ (the registry's own CHECK);
+//   local_id 1-200 characters, no control characters (C0, DEL and the C1 range: the registry's CHECK);
+//            compared EXACTLY (case-sensitive, no Unicode normalisation);
+//   numbers  an integer id (an image account) is accepted only as a NON-NEGATIVE integer within the safe range
+//            (<= 2^53-1), and is then exactly its decimal text. BigInt, booleans, objects, negative numbers,
+//            non-integers and anything out of range are refused: nothing is parsed, rounded or stringified
+//            into a form the registry might hold ("1.0", "1e3", "+7", "-0"), so a value one language would
+//            accept and another refuse cannot exist. (A JavaScript number cannot tell 42.0 from 42; Python
+//            refuses every float. That is the one inherent asymmetry and the shared vectors avoid it.)
+const KIND_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+const MAX_LOCAL_ID = 200;
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 const CONFLICT = Symbol('conflict');
 
-// A local id as the services keep them: text, but an integer id (an image account) is the same thing
-// as its decimal text. Anything else cannot name a resource.
 function normalizeId(value) {
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
-  if (typeof value === 'bigint') return String(value);
-  if (typeof value === 'string' && value !== '' && value.length <= MAX_ID_LENGTH) return value;
-  return null;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0) ? String(value) : null;
+  }
+  if (typeof value === 'string') {
+    return value !== '' && [...value].length <= MAX_LOCAL_ID && !CONTROL_RE.test(value) ? value : null;
+  }
+  return null; // bigint, boolean, object, null, undefined...
 }
 
 function normalizeKind(kind) {
-  return typeof kind === 'string' && kind !== '' && kind.length <= MAX_ID_LENGTH ? kind : null;
+  return typeof kind === 'string' && KIND_RE.test(kind) ? kind : null;
+}
+
+// Order by Unicode code point (what Python's sorted() does). JavaScript's default sort compares UTF-16 code
+// units, which disagrees with it for characters outside the BMP; the lists must read the same in both.
+function byCodePoint(a, b) {
+  const x = Array.from(a);
+  const y = Array.from(b);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+    if (d !== 0) return d;
+  }
+  return x.length - y.length;
 }
 
 function buildIndex(snapshot, { maxResources, logger }) {
@@ -70,7 +96,7 @@ function buildIndex(snapshot, { maxResources, logger }) {
       ids.push(id);
     }
   }
-  for (const kinds of index.byTenant.values()) for (const ids of kinds.values()) ids.sort();
+  for (const kinds of index.byTenant.values()) for (const ids of kinds.values()) ids.sort(byCodePoint);
   return index;
 }
 

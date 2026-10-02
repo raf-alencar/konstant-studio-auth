@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "test": "node --test test/vectors.test.js test/unit.test.js test/service-keys.test.js test/effective.test.js test/hardening.test.js test/resources.test.js test/legacy.test.js",
-    "test:e2e": "node --test test/e2e/*.test.js",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.js",
     "test:smoke": "node --test test/pack-smoke.test.js"
   },
   "keywords": [

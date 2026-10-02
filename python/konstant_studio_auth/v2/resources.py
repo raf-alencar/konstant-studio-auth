@@ -16,28 +16,39 @@ Fail closed, in this order:
   - an index larger than `max_resources` => unavailable (memory stays bounded).
 """
 
-MAX_ID_LENGTH = 256
+import re
+
+# The canonical id rule, one for both languages (it mirrors what the platform's registry can hold, so
+# anything it could never hold can never be owned and is refused up front):
+#   kind     a lowercase slug, [a-z][a-z0-9_-]{0,63} (the registry's own CHECK);
+#   local_id 1-200 characters, no control characters (C0, DEL and the C1 range: the registry's CHECK);
+#            compared EXACTLY (case-sensitive, no Unicode normalisation);
+#   numbers  an integer id (an image account) is accepted only as a NON-NEGATIVE integer within the safe range
+#            (<= 2**53-1), and is then exactly its decimal text. Booleans, floats, objects, negative numbers
+#            and anything out of range are refused: nothing is parsed, rounded or stringified into a form the
+#            registry might hold ("1.0", "1e3", "+7", "-0"), so a value one language would accept and another
+#            refuse cannot exist. (A JavaScript number cannot tell 42.0 from 42; Python refuses EVERY float.
+#            That is the one inherent asymmetry and the shared vectors avoid it.)
+# fullmatch with explicit classes throughout: `$` would accept a trailing newline.
+KIND_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+MAX_LOCAL_ID = 200
 SAFE_INT = 2**53 - 1
+_CONTROL_RE = re.compile("[\u0000-\u001f\u007f-\u009f]")
 _CONFLICT = object()
 
 
 def normalize_id(value):
-    """A local id as the services keep them: text, but an integer id (an image account) is the same thing
-    as its decimal text. Anything else cannot name a resource. (A bool is not an int id; an integer beyond
-    JS's safe range is refused, as Node refuses such a number.)"""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return str(value) if abs(value) <= SAFE_INT else None
-    if isinstance(value, float):
-        return str(int(value)) if value == value and value not in (float("inf"), float("-inf")) and value.is_integer() and abs(value) <= SAFE_INT else None
-    if isinstance(value, str) and value != "" and len(value) <= MAX_ID_LENGTH:
-        return value
-    return None
+        return str(value) if 0 <= value <= SAFE_INT else None
+    if isinstance(value, str):
+        return value if value != "" and len(value) <= MAX_LOCAL_ID and not _CONTROL_RE.search(value) else None
+    return None  # float, bytes, list, dict, None...
 
 
 def normalize_kind(kind):
-    return kind if isinstance(kind, str) and kind != "" and len(kind) <= MAX_ID_LENGTH else None
+    return kind if isinstance(kind, str) and KIND_RE.fullmatch(kind) else None
 
 
 class ResourceIndex:

@@ -76,7 +76,7 @@ test('service keys and effective permissions against the scratch platform', asyn
     const auth = build();
     let compared = 0;
     for (const c of VECTORS.cases) {
-      if (c.pending || c.requires_platform || c.platform === 'down' || c.parity === false || c.who.token || c.resolve_only || !c.ask.permission) continue;
+      if (c.pending || c.platform === 'down' || c.parity === false || c.who.token || c.resolve_only || !c.ask.permission) continue;
       if (c.who.key && ctx.state.keys[c.who.key].startsWith('stgs_')) continue; // service principals hold none: covered above
       if (!(c.who.clerk || c.who.key)) continue;
       const headers = c.who.clerk ? { authorization: `Bearer ${await tokenFor(ctx, c.who.clerk)}` } : { 'x-api-key': ctx.state.keys[c.who.key] };

@@ -310,6 +310,7 @@ await auth.resourcesFor(tenantId, 'channel');   // { ok: true, ids: ['ch_123', .
 ```
 
 - **Fail closed.** No usable snapshot, or one older than the stale-read window, is *unavailable*. A snapshot from a platform **without** C0f (no `resources` field) is also *unavailable*, never "unowned": "this platform cannot tell" must not read as "nobody owns it". A local id with no owner is `null`. An id the snapshot gives to two tenants (a platform bug) is refused (`null`) and logged once. A stale snapshot is served only inside the usual bounded-age window and the answer says `stale: true`.
+- **One id rule, both languages** (it mirrors what the platform's registry can hold, so anything it could never hold can never be owned and is refused up front). `kind` is a lowercase slug (`^[a-z][a-z0-9_-]{0,63}$`). `localId` is a string of 1-200 characters with no control characters (C0, DEL, C1), compared **exactly** (case-sensitive, no Unicode normalisation), or a **non-negative integer within the safe range** (≤ 2^53-1), which is then exactly its decimal text. Refused, with no coercion into a form the registry might hold (`"1.0"`, `"1e3"`, `"+7"`, `"-0"`): BigInt, booleans, negative numbers, non-integers, out-of-range integers, objects, `null`. The result for a refused value is `null` (nobody owns it). The one inherent asymmetry: JavaScript cannot tell `42.0` from `42` (both are the integer 42), while Python refuses every float; pass ids as strings or integers. Lists come back ordered by Unicode code point in both languages.
 - **Cheap and bounded.** The reverse index is built once per snapshot and reused (a `304` keeps it); memory is capped by `maxResources` (default 100000, beyond which lookups are refused). Matching is exact and case-sensitive; an integer id is the same as its decimal text; `kind` is part of the key.
 - **Helpers, so repos do not hand-roll tenant checks.**
 
@@ -355,9 +356,11 @@ app.post('/_platform/events', express.raw({ type: 'application/json' }), auth.ev
 ```bash
 npm test            # shared vectors (cases, credential extraction, route policy) + unit + hardening + v1 compatibility (no network)
 npm run test:smoke  # pack the tarball, install it into a scratch project, load it like the adopters do
-# parity + sample apps against a scratch copy of the platform branch:
-python scripts/scratch_platform.py start --platform-dir <copy of the C0b branch> --database-url postgresql://postgres@127.0.0.1:55433/cptest_x
-npm run test:e2e
+# parity + sample apps + the real tenant-resource registry, against a scratch copy of the PINNED platform commit
+# (test-vectors/vectors.json contract.platform_commit: archive that exact hash, never a branch tip), run in the
+# platform's own hash-locked environment (its scripts/dev-venv.sh / `pip install --require-hashes -r requirements.txt`):
+python scripts/scratch_platform.py start --platform-dir <archive of the pinned commit> --database-url postgresql://postgres@127.0.0.1:55433/cptest_x --port 3361 --jwks-port 3362
+npm run test:e2e    # the e2e files run one at a time: they change shared platform state (revocations, registrations)
 python scripts/scratch_platform.py stop
 ```
 

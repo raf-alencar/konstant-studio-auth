@@ -2,10 +2,9 @@
   "$comment": "Shared test vectors for @konstant-studio/auth v2 (Node and Python consume this same file). Every value here is fake. `world` is what the platform would hold; `cases` are what the library must answer. `reason` is the PLATFORM's answer (parity-tested against /v1/authorize on a scratch copy of the C0b branch); `offline_reason` is set only where an offline decision cannot tell reasons apart and uses a coarser (still denying) one.",
   "version": 1,
   "contract": {
-    "platform_commit": "833538787f7bf4416909dbcf79ed397337ece0fe",
-    "platform_branch": "feat/control-plane-c0a-c0b",
-    "note": "Pinned at the accepted C0b2 with its fixes (guard first, mandatory expect_service, uniform key_not_found, audit bounds).",
-    "resources_note": "The `resources` field of the snapshot (and the lookups / tenantOf cases that need it) is C0f, which is not yet in a committed platform build: the e2e parity runners skip every case marked requires_platform=C0f until the pin moves to a commit that has it."
+    "platform_commit": "5a6a698b4af766c4bc7fb8fcf4ff9318fa41b33f",
+    "platform_branch": "feat/control-plane (github.com/raf-alencar/stighive-platform); archive the exact hash, never the branch tip",
+    "note": "Pinned at the commit the CoS accepted for deploy (round 2): C0f registry, uniform key_not_found, mandatory expect_service."
   },
   "config": {
     "service": "docs",
@@ -661,6 +660,48 @@
         "service": "mail",
         "kind": "mailbox",
         "local_id": "ops@client.example",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "9007199254740993",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "-1",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "1.5",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "true",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "café",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "status": "active"
       }
     ]
@@ -2410,7 +2451,6 @@
         "source": "offline",
         "tenant_source": "resource"
       },
-      "requires_platform": "C0f",
       "parity_tenant": "acme"
     },
     {
@@ -2433,7 +2473,6 @@
         "tenant": null,
         "source": "none"
       },
-      "requires_platform": "C0f",
       "parity": false,
       "parity_note": "decided by the library's registry lookup; the platform has no such question"
     },
@@ -2458,7 +2497,6 @@
         "source": "offline",
         "tenant_source": "resource"
       },
-      "requires_platform": "C0f",
       "parity_tenant": "globex"
     },
     {
@@ -2482,7 +2520,6 @@
         "tenant": null,
         "source": "none"
       },
-      "requires_platform": "C0f",
       "parity": false,
       "parity_note": "decided by the library's registry lookup"
     },
@@ -2510,8 +2547,7 @@
         ],
         "source": "offline",
         "tenant_source": "resource"
-      },
-      "requires_platform": "C0f"
+      }
     },
     {
       "id": "tenant-of-beats-org-claim-and-header",
@@ -2543,7 +2579,6 @@
         "source": "offline",
         "tenant_source": "resource"
       },
-      "requires_platform": "C0f",
       "parity_tenant": "globex"
     },
     {
@@ -2566,7 +2601,6 @@
         "tenant": null,
         "source": "live"
       },
-      "requires_platform": "C0f",
       "parity_tenant": "globex"
     },
     {
@@ -2589,7 +2623,6 @@
         "tenant": null,
         "source": "none"
       },
-      "requires_platform": "C0f",
       "platform": "down",
       "cache_age_s": null
     }
@@ -3515,8 +3548,10 @@
         "expect": {
           "ok": true,
           "ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "brand-a",
             "brand-b",
+            "café",
             "shared"
           ],
           "stale": false
@@ -3636,8 +3671,10 @@
         "expect": {
           "ok": true,
           "ids": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "brand-a",
             "brand-b",
+            "café",
             "shared"
           ],
           "stale": true
@@ -3718,6 +3755,315 @@
           "status": 503
         },
         "snapshot": "no-resources-field"
+      },
+      {
+        "id": "id-integer-beyond-the-safe-range",
+        "desc": "an integer past 2^53-1 is refused in BOTH languages (the registry holds the string '9007199254740993': accepting the number would match it)",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": {
+            "$type": "int",
+            "value": "9007199254740993"
+          }
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-bigint",
+        "desc": "a BigInt (Node) / an integer past the safe range (Python) is refused in both",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": {
+            "$type": "bigint",
+            "value": "9007199254740993"
+          }
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-the-same-digits-as-a-string",
+        "desc": "the exact registry string is an id like any other",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "9007199254740993"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-negative-number",
+        "desc": "a negative number is refused (the registry holds '-1')",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": -1
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-negative-as-a-string",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "-1"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-non-integral-float",
+        "desc": "no float forms (the registry holds '1.5')",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": {
+            "$type": "float",
+            "value": "1.5"
+          }
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-float-as-a-string",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "1.5"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-boolean",
+        "desc": "a boolean is not an id (the registry holds 'true')",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": true
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-boolean-as-a-string",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "true"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-unicode-is-exact",
+        "desc": "no Unicode normalisation: the composed form matches the registry",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "café"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-unicode-decomposed-is-another-id",
+        "desc": "...and the decomposed form is not it",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "café"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-exactly-200-characters",
+        "desc": "the registry's maximum length",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": "acme"
+        }
+      },
+      {
+        "id": "id-201-characters",
+        "desc": "longer than the registry can hold",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-control-character",
+        "desc": "control characters can never be registered",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a\u0007"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-c1-control-character",
+        "desc": "the C1 range too",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "id-newline",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a\n"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "kind-uppercase",
+        "desc": "kinds are lowercase slugs",
+        "call": "tenantFor",
+        "args": {
+          "kind": "Brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "kind-invalid-characters",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand!",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "kind-longer-than-64",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "kind-trailing-newline",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand\n",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "tenant": null
+        }
+      },
+      {
+        "id": "resources-for-lists-the-ids-as-registered",
+        "desc": "exact strings, sorted",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "account"
+        },
+        "expect": {
+          "ok": true,
+          "stale": false,
+          "ids": [
+            "-1",
+            "1.5",
+            "42",
+            "9007199254740993",
+            "true"
+          ]
+        }
       }
     ]
   }

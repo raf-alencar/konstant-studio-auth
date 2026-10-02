@@ -10,8 +10,14 @@ Semantic versioning. v1 exports are never removed in a minor release; they are d
 - `requireResourceInTenant` (Express), `checkResourceInTenant` (Next.js), `require_resource_in_tenant` (FastAPI): after a decision, refuse an object that belongs to another tenant.
 - Shared vectors: 29 lookup cases and 8 `tenantOf` decision cases for both languages.
 
-### Not yet verified against the real platform
-- The `resources` snapshot field is C0f, which is not in a committed platform build yet. The lookups and `tenantOf` run against the shared vectors and a fake platform that builds the field exactly as the C0f work in progress does; the e2e parity runners skip those cases ("pending-platform: C0f") until the pin moves to a commit that has it.
+### Verified against the real platform
+- Parity is pinned to platform commit `5a6a698` (round 2, the commit the CoS accepted for deploy; archive the exact hash). The e2e suites run against a scratch copy built in the platform's own hash-locked environment: the world's snapshot `resources` equals the real one, every lookup vector agrees with the platform's own reverse lookup and list, the 8 `tenantOf` decision cases match `/v1/authorize`, and a service registers through `POST /v1/resources` (idempotent 200/201, 409 for another tenant's id without naming the owner, one 403 for an unentitled tenant, 422 for a value the registry cannot hold, retirement frees the id) with the library following through the change feed.
+
+### One canonical id rule
+- Both languages accept exactly what the registry could hold and nothing else: lowercase-slug `kind`; `localId` a 1-200 character string without control characters compared exactly, or a non-negative safe integer (its decimal text). BigInt, booleans, negatives, non-integers and out-of-range integers are refused (previously Node accepted any BigInt and Python an integral float). Lists are ordered by code point in both. 21 new shared vectors make each rule observable.
+
+### Test infrastructure
+- The e2e files run serially (a latent race between the change-feed test and the effective-permissions parity test); the scratch harness registers the world's registry rows through the platform's own API, refuses a port clash, and terminates its children if start-up fails.
 
 ## 0.2.0 — control-plane authorization (v2)
 

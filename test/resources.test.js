@@ -193,3 +193,32 @@ test('tenantOf is only reached after the credential is verified (an anonymous ca
   assert.deepEqual([d.allow, d.reason], [false, 'no_credential']);
   assert.equal(fake.count('GET', '/v1/authorize/snapshot'), 0);
 });
+
+test('the canonical id rule, value by value (what JSON vectors cannot carry)', () => {
+  const { normalizeId, normalizeKind } = require('../v2/resources');
+  const accepted = [[0, '0'], [42, '42'], [Number.MAX_SAFE_INTEGER, '9007199254740991'], ['x', 'x'], ['  spaced  ', '  spaced  '], ['caf\u00e9', 'caf\u00e9'], ['a'.repeat(200), 'a'.repeat(200)], ['\u{1F600}'.repeat(200), '\u{1F600}'.repeat(200)]];
+  for (const [input, out] of accepted) assert.equal(normalizeId(input), out, String(input).slice(0, 10));
+  const refused = [-1, -0, 1.5, 1e21, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, 10n, 0n, true, false, null, undefined, {}, [], ['a'], () => 1, Symbol('x'),
+    '', 'a'.repeat(201), '\u{1F600}'.repeat(201), 'a\u0000', 'a\u001f', 'a\u007f', 'a\u0080', 'a\u009f', 'a\n', '\ta'];
+  for (const input of refused) assert.equal(normalizeId(input), null, String(typeof input));
+  for (const k of ['brand', 'a', 'a1_b-c', 'b'.repeat(64)]) assert.equal(normalizeKind(k), k);
+  for (const k of ['', 'Brand', '1brand', 'brand!', 'brand\n', 'b'.repeat(65), 'br and', 5, null, undefined, {}]) assert.equal(normalizeKind(k), null, String(k));
+});
+
+test('resourcesFor orders by code point whatever order the snapshot lists them in (including characters outside the BMP)', async () => {
+  const { auth, fake } = await build();
+  fake.override = (path) => (path === '/v1/authorize/snapshot' ? snapshotWith([
+    tenant(ACME, [{ kind: 'brand', local_id: '\u{1F600}' }, { kind: 'brand', local_id: 'Ａ' }, { kind: 'brand', local_id: 'b' }, { kind: 'brand', local_id: 'B' }, { kind: 'brand', local_id: 'a' }]),
+  ]) : undefined);
+  assert.deepEqual((await auth.resourcesFor(ACME, 'brand')).ids, ['B', 'a', 'b', 'Ａ', '\u{1F600}']);
+});
+
+test('kinds the registry cannot hold own nothing even if a snapshot lists them', async () => {
+  const { auth, fake } = await build();
+  fake.override = (path) => (path === '/v1/authorize/snapshot' ? snapshotWith([
+    tenant(ACME, [{ kind: 'Brand', local_id: 'x' }, { kind: 'bra nd', local_id: 'x' }, { kind: 'brand', local_id: 'x' }]),
+  ]) : undefined);
+  assert.equal((await auth.tenantFor('brand', 'x')).tenantId, ACME);
+  assert.equal((await auth.tenantFor('Brand', 'x')).tenantId, null, 'asking with an unholdable kind is refused, whatever the snapshot says');
+  assert.deepEqual((await auth.resourcesFor(ACME, 'Brand')).ids, []);
+});

@@ -86,7 +86,7 @@ async def test_effective_permits_agrees_with_authorize_on_every_runnable_vector(
     compared = 0
     try:
         for c in VECTORS["cases"]:
-            if c.get("pending") or c.get("requires_platform") or c.get("platform") == "down" or c.get("parity") is False or c["who"].get("token") or c.get("resolve_only"):
+            if c.get("pending") or c.get("platform") == "down" or c.get("parity") is False or c["who"].get("token") or c.get("resolve_only"):
                 continue
             if not c["ask"].get("permission"):
                 continue

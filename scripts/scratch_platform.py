@@ -27,6 +27,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -38,6 +39,7 @@ WORLD = VECTORS["world"]
 NS = uuid.UUID(WORLD["namespace"])
 SERVICE_KEY_PREFIX = {"agent": "stga_", "guest": "stgg_", "service": "stgs_"}
 FORBIDDEN_PORTS = {3229, 3227}  # the real platform and graph
+_CHILDREN: list = []  # processes this run started; terminated if start() fails, so a failure leaves nothing behind
 
 
 def uid(kind: str, ref: str | None):
@@ -160,9 +162,48 @@ async def seed(conn, raw_keys: dict) -> None:
         if k["state"] == "unknown":
             continue  # a well-formed key the platform has never seen
         await q("INSERT INTO stighive_platform.principal_keys (principal_id, name, key_hash, key_prefix, key_suffix, allowed_routes, expires_at, revoked_at) "
-                "VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $7 THEN now() - interval '1 hour' END, CASE WHEN $8 THEN now() END)",
+                "VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $7 THEN now() - interval '1 hour' WHEN $9 THEN now() + interval '30 days' END, CASE WHEN $8 THEN now() END)",
                 principal_ids[k["principal"]], k["ref"], hashlib.sha256(raw.encode()).hexdigest(), raw[:12], raw[-4:],
-                k.get("routes", []), k["state"] == "expired", k["state"] == "revoked")
+                k.get("routes", []), k["state"] == "expired", k["state"] == "revoked",
+                # the platform refuses a guest key without an expiry (CHECK "guest keys must carry an expiry")
+                k["kind"] == "guest")
+
+
+def seed_resources(base: str, service_key: str, database_url: str) -> None:
+    """The world's registry rows. A service registers ITS OWN ids through the platform's API with a key bound to it
+    (POST /v1/resources: the tenant must be active and entitled): that is how the docs rows get in, exactly as
+    a real service would. Rows the API would (rightly) refuse for this key are written directly, like an operator's
+    bootstrap: another service's rows, a tenant that is not entitled, and retired rows (retire is an admin action)."""
+    import asyncpg
+
+    docs_rows = [r for r in WORLD.get("resources", []) if r["service"] == "docs" and r.get("status", "active") == "active"]
+    entitled = {e["tenant"] for e in WORLD["entitlements"] if e["service"] == "docs" and e["state"] == "on" and not e.get("transient")}
+    direct: list[dict] = [r for r in WORLD.get("resources", []) if r not in docs_rows]
+    for r in docs_rows:
+        if r["tenant"] not in entitled or {t["ref"]: t for t in WORLD["tenants"]}[r["tenant"]]["status"] != "active":
+            direct.append(r)  # the service key cannot register for a tenant that is not entitled: an operator does
+            continue
+        req = urllib.request.Request(
+            f"{base}/v1/resources", method="POST", headers={"X-API-Key": service_key, "Content-Type": "application/json"},
+            data=json.dumps({"tenant_id": str(uid("tenant", r["tenant"])), "kind": r["kind"], "local_id": r["local_id"]}).encode())
+        try:
+            urllib.request.urlopen(req).read()
+        except urllib.error.HTTPError as err:
+            raise SystemExit(f"registering {r['kind']}:{r['local_id']} for {r['tenant']} was refused ({err.code}): {err.read()[:200]!r}")
+
+    async def direct_rows() -> None:
+        conn = await asyncpg.connect(database_url)
+        try:
+            for r in direct:
+                retired = r.get("status", "active") == "retired"
+                await conn.execute(
+                    "INSERT INTO stighive_platform.tenant_resources (tenant_id, service, kind, local_id, status, source, retired_at) "
+                    "VALUES ($1,$2,$3,$4,$5,'seed', CASE WHEN $6 THEN now() END)",
+                    uid("tenant", r["tenant"]), r["service"], r["kind"], r["local_id"], "retired" if retired else "active", retired)
+        finally:
+            await conn.close()
+
+    asyncio.run(direct_rows())
 
 
 def start(args) -> None:
@@ -197,6 +238,7 @@ def start(args) -> None:
     (jwks_dir / "jwks.json").write_text(json.dumps({"keys": [rsa_public_jwk(clerk_pem, kid)]}))
     jwks = subprocess.Popen([sys.executable, "-m", "http.server", str(jwks_port), "--bind", "127.0.0.1", "--directory", str(jwks_dir)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _CHILDREN.append(jwks)
 
     wait_http(f"http://127.0.0.1:{jwks_port}/jwks.json", 10)  # OUR server must be the one answering
     shared_key = "fake-shared-" + secrets.token_urlsafe(24)
@@ -216,6 +258,7 @@ def start(args) -> None:
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(args.port)],
         cwd=args.platform_dir, env=env, stdout=log, stderr=subprocess.STDOUT)
+    _CHILDREN.append(server)
     base = f"http://127.0.0.1:{args.port}"
     wait_http(f"{base}/health")
 
@@ -235,8 +278,11 @@ def start(args) -> None:
     req = urllib.request.Request(
         f"{base}/v1/service-keys", method="POST", headers={"X-API-Key": shared_key, "Content-Type": "application/json"},
         data=json.dumps({"name": "docs-adopter", "service": "docs", "allowed_routes": [
-            "GET /v1/authorize/snapshot", "GET /v1/events", "POST /v1/authorize", "POST /v1/principals/resolve"]}).encode())
+            "GET /v1/authorize/snapshot", "GET /v1/events", "POST /v1/authorize", "POST /v1/principals/resolve",
+            "POST /v1/resources", "GET /v1/resources"]}).encode())
     service_key = json.loads(urllib.request.urlopen(req).read())["raw_key"]
+
+    seed_resources(base, service_key, args.database_url)
 
     state = {
         "platform_url": base, "jwks_url": f"http://127.0.0.1:{jwks_port}/jwks.json",
@@ -279,7 +325,12 @@ def main() -> None:
         return
     if not args.platform_dir or not args.database_url:
         sys.exit("--platform-dir and --database-url (or SCRATCH_PLATFORM_DIR / SCRATCH_DATABASE_URL) are required")
-    start(args)
+    try:
+        start(args)
+    except BaseException:
+        for proc in _CHILDREN:
+            proc.terminate()
+        raise
 
 
 if __name__ == "__main__":

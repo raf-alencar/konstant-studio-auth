@@ -137,10 +137,12 @@ async def test_lookups_never_raise_whatever_they_are_asked(build):
         assert b["ok"] is False or isinstance(b["ids"], list)
 
 
-async def test_integer_ids_are_their_decimal_text_but_a_bool_is_not_an_id(build):
+async def test_integer_ids_are_their_decimal_text_bool_float_negative_and_huge_are_not_ids(build):
     h = build()
     assert (await h.auth.tenant_for("account", 42))["tenant_id"] == h.acme
-    assert (await h.auth.tenant_for("account", 42.0))["tenant_id"] == h.acme
+    assert (await h.auth.tenant_for("account", 42.0))["tenant_id"] is None, "Python refuses every float"
+    for refused in (-1, 2**53, 10**30):
+        assert (await h.auth.tenant_for("account", refused))["tenant_id"] is None, refused
     assert (await h.auth.tenant_for("account", True))["tenant_id"] is None
 
 
@@ -249,3 +251,21 @@ async def test_tenant_of_is_only_reached_after_the_credential_is_verified(build)
     d = await h.auth.authorize(headers={}, permission="docs:read", resource={"tenant_of": {"kind": "brand", "local_id": "brand-a"}})
     assert (d.allow, d.reason) == (False, "no_credential")
     assert snapshots_calls(h) == 0
+
+
+async def test_resources_for_sorts_by_code_point_whatever_order_the_snapshot_lists_them(build):
+    h = build()
+    ids = ["b", "\U0001F600", "a", "￿", "B", "10", "9"]
+    h.fake.override = lambda path, body: snapshot_with([tenant(h.acme, [{"kind": "brand", "local_id": i} for i in ids])]) if path == "/v1/authorize/snapshot" else None
+    got = (await h.auth.resources_for(h.acme, "brand"))["ids"]
+    assert got == sorted(ids) == ["10", "9", "B", "a", "b", "￿", "\U0001F600"]
+
+
+async def test_kinds_the_registry_cannot_hold_are_refused_even_if_a_snapshot_lists_them(build):
+    h = build()
+    bad_kinds = ["Brand", "brand!", "b" * 65, "brand\n", "1brand", "", "bad kind"]
+    h.fake.override = lambda path, body: snapshot_with([tenant(h.acme, [{"kind": k, "local_id": "x"} for k in bad_kinds] + [{"kind": "ok_kind-1", "local_id": "x"}])]) if path == "/v1/authorize/snapshot" else None
+    for k in bad_kinds:
+        assert (await h.auth.tenant_for(k, "x"))["tenant_id"] is None, repr(k)
+        assert (await h.auth.resources_for(h.acme, k))["ids"] == [], repr(k)
+    assert (await h.auth.tenant_for("ok_kind-1", "x"))["tenant_id"] == h.acme

@@ -37,6 +37,7 @@ function resourceOf(ctx, c) {
   const r = {};
   if (c.ask.tenant) r.tenant = ctx.world.id('tenant', c.ask.tenant);
   if (c.ask.tenant_hint) r.tenantHint = ctx.world.id('tenant', c.ask.tenant_hint);
+  if (c.ask.tenant_of) r.tenantOf = { kind: c.ask.tenant_of.kind, localId: c.ask.tenant_of.local_id };
   if (c.ask.brand) r.brand = c.ask.brand;
   if (c.ask.domain) r.domain = c.ask.domain;
   if (c.ask.mailbox) r.mailbox = c.ask.mailbox;
@@ -71,12 +72,14 @@ test('parity with the scratch platform', async (t) => {
     const seeded = ctx.world.constructor;
     const atSeed = new seeded(undefined, { includeTransient: false });
     atSeed.nowMs = ctx.state.seeded_at_ms;
-    const built = atSeed.snapshot('docs', { withResources: false }); // the pinned platform build has no C0f `resources` yet
+    const built = atSeed.snapshot('docs');
 
     const roleSlug = new Map([...real.roles, ...built.roles].map((r) => [r.id, r.slug]));
     const norm = (s) => ({
       permissions: [...s.permissions].sort((a, b) => a.action.localeCompare(b.action)),
-      tenants: s.tenants.map((x) => ({ id: x.id, type: x.type, org_id: x.org_id, parent_id: x.parent_id, ancestors: x.ancestors, plan: x.plan,
+      tenants: s.tenants.map((x) => ({ id: x.id, type: x.type, org_id: x.org_id,
+        // the registry rows of this service for the tenant (C0f), as an unordered set: ordering is the platform's collation, not part of the contract
+        resources: (x.resources || []).map((r) => JSON.stringify([r.kind, r.local_id])).sort(), parent_id: x.parent_id, ancestors: x.ancestors, plan: x.plan,
         starts: x.starts_at ? Date.parse(x.starts_at) : null, ends: x.ends_at ? Date.parse(x.ends_at) : null })).sort((a, b) => a.id.localeCompare(b.id)),
       roles: s.roles.map((r) => ({ slug: r.slug, tenant_id: r.tenant_id, permissions: r.permissions })).sort((a, b) => (a.slug + a.tenant_id).localeCompare(b.slug + b.tenant_id)),
       memberships: s.memberships.map((m) => ({ who: m.kind === 'human' ? m.user_id : m.principal_id, kind: m.kind, tenant_id: m.tenant_id, role: roleSlug.get(m.role_id), scope: m.scope,
@@ -93,8 +96,8 @@ test('parity with the scratch platform', async (t) => {
   });
 
   for (const c of VECTORS.cases) {
-    if (c.pending || c.requires_platform || c.platform === 'down' || c.parity === false) {
-      await t.test(c.id, { skip: c.pending || (c.requires_platform && `pending-platform: ${c.requires_platform} is not in the pinned platform build yet`) || c.parity_note || 'needs a down platform: covered by the unit vectors' }, () => {});
+    if (c.pending || c.platform === 'down' || c.parity === false) {
+      await t.test(c.id, { skip: c.pending || c.parity_note || 'needs a down platform: covered by the unit vectors' }, () => {});
       continue;
     }
     if (c.resolve_only) {

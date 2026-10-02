@@ -158,6 +158,13 @@ def test_shared_route_policy_vector(c):
 # ---- resource lookups (platform C0f): who owns a service-local id? --------------------------------------
 
 
+def _decode(v):
+    """Arguments can be tagged {"$type": "int"|"bigint"|"float", "value": "<text>"}."""
+    if isinstance(v, dict) and "$type" in v:
+        return float(v["value"]) if v["$type"] == "float" else int(v["value"])
+    return v
+
+
 @pytest.mark.parametrize("c", VECTORS["lookups"]["cases"], ids=lambda c: c["id"])
 async def test_shared_lookup_vector(c, make_harness, world):
     h = make_harness()
@@ -171,8 +178,9 @@ async def test_shared_lookup_vector(c, make_harness, world):
         h.fake.down = True
 
     a = c["args"]
+    kind, local_id = _decode(a.get("kind")), _decode(a.get("local_id"))
     tenant = a.get("tenant_raw") or (world.id("tenant", a["tenant"]) if a.get("tenant") else None)
-    got = await h.auth.tenant_for(a.get("kind"), a.get("local_id")) if c["call"] == "tenantFor" else await h.auth.resources_for(tenant, a.get("kind"))
+    got = await h.auth.tenant_for(kind, local_id) if c["call"] == "tenantFor" else await h.auth.resources_for(tenant, kind)
 
     e = c["expect"]
     assert got["ok"] is e["ok"]

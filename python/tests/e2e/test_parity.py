@@ -20,7 +20,7 @@ from .helpers import bearer, library_for, platform_authorize, psql
 
 def _cases():
     for c in VECTORS["cases"]:
-        reason = ("pending-platform: C0f is not in the pinned platform build yet" if c.get("requires_platform") else None) or c.get("pending") or (c.get("parity_note") if c.get("parity") is False else None) or (
+        reason = c.get("pending") or (c.get("parity_note") if c.get("parity") is False else None) or (
             "needs a down platform: covered by the unit vectors" if c.get("platform") == "down" else None
         )
         yield pytest.param(c, id=c["id"], marks=[pytest.mark.skip(reason=reason)] if reason else [])
@@ -37,7 +37,7 @@ def test_fixture_world_builds_the_snapshot_the_platform_serves(ctx):
     # The world's windows and expiries are offsets from the moment the scratch DB was seeded.
     at_seed = World(include_transient=False)
     at_seed.now_ms = ctx.state["seeded_at_ms"]
-    built = at_seed.snapshot("docs", with_resources=False)  # the pinned platform has no C0f resources yet
+    built = at_seed.snapshot("docs")
 
     role_slug = {r["id"]: r["slug"] for r in [*real["roles"], *built["roles"]]}
 
@@ -45,7 +45,9 @@ def test_fixture_world_builds_the_snapshot_the_platform_serves(ctx):
         return {
             "permissions": sorted(s["permissions"], key=lambda p: p["action"]),
             "tenants": sorted(
-                [{"id": x["id"], "type": x["type"], "org_id": x["org_id"], "parent_id": x["parent_id"], "ancestors": x["ancestors"], "plan": x["plan"],
+                [{"id": x["id"], "type": x["type"], "org_id": x["org_id"],
+                  # the registry rows of this service for the tenant (C0f), as an unordered set: ordering is the platform's collation
+                  "resources": sorted(json.dumps([r["kind"], r["local_id"]]) for r in x.get("resources", [])), "parent_id": x["parent_id"], "ancestors": x["ancestors"], "plan": x["plan"],
                   "starts": _ms(x["starts_at"]), "ends": _ms(x["ends_at"])} for x in s["tenants"]], key=lambda x: x["id"]),
             "roles": sorted([{"slug": r["slug"], "tenant_id": r["tenant_id"], "permissions": r["permissions"]} for r in s["roles"]],
                             key=lambda r: r["slug"] + (r["tenant_id"] or "null")),
@@ -117,6 +119,8 @@ def _resource(ctx, c):
     for f in ("brand", "domain", "mailbox"):
         if c["ask"].get(f):
             r[f] = c["ask"][f]
+    if c["ask"].get("tenant_of"):
+        r["tenant_of"] = {"kind": c["ask"]["tenant_of"]["kind"], "local_id": c["ask"]["tenant_of"]["local_id"]}
     if c["ask"].get("tenant_hint"):
         r["tenant_hint"] = ctx.world.id("tenant", c["ask"]["tenant_hint"])  # the x-tenant header
     return r

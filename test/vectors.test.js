@@ -161,6 +161,16 @@ test('shared route-policy vectors', async (t) => {
 });
 
 // ---- resource lookups (platform C0f): who owns a service-local id? -----------------------------------------
+// Vector arguments that JSON cannot carry natively: {"$type": "int"|"bigint"|"float", "value": "<text>"}.
+// Node has no float/int distinction (and no int past 2^53 without BigInt): `int` and `float` become Numbers
+// (so an out-of-range int is a Number the rule refuses), `bigint` becomes a BigInt.
+function decodeArg(v) {
+  if (v && typeof v === 'object' && !Array.isArray(v) && '$type' in v) {
+    return v.$type === 'bigint' ? BigInt(v.value) : Number(v.value);
+  }
+  return v;
+}
+
 test('shared lookup vectors', async (t) => {
   const keys = await newClerkKeys();
   for (const c of VECTORS.lookups.cases) {
@@ -176,7 +186,7 @@ test('shared lookup vectors', async (t) => {
 
       const a = c.args;
       const tenant = a.tenant_raw ?? (a.tenant ? world.id('tenant', a.tenant) : undefined);
-      const got = c.call === 'tenantFor' ? await auth.tenantFor(a.kind, a.local_id) : await auth.resourcesFor(tenant, a.kind);
+      const got = c.call === 'tenantFor' ? await auth.tenantFor(decodeArg(a.kind), decodeArg(a.local_id)) : await auth.resourcesFor(tenant, decodeArg(a.kind));
 
       const e = c.expect;
       assert.equal(got.ok, e.ok);
