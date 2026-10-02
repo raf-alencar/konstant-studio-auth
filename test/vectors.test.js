@@ -51,6 +51,7 @@ function resourceFor(c) {
   if (c.ask.tenant) r.tenant = world.id('tenant', c.ask.tenant);
   if (c.ask.tenant_raw) r.tenant = c.ask.tenant_raw;
   if (c.ask.tenant_hint) r.tenantHint = world.id('tenant', c.ask.tenant_hint);
+  if (c.ask.tenant_of) r.tenantOf = { kind: c.ask.tenant_of.kind, localId: c.ask.tenant_of.local_id };
   if (c.ask.brand) r.brand = c.ask.brand;
   if (c.ask.domain) r.domain = c.ask.domain;
   if (c.ask.mailbox) r.mailbox = c.ask.mailbox;
@@ -97,6 +98,7 @@ test('shared vectors', async (t) => {
       assert.equal(d.status, exp.status);
       assert.equal(d.source, exp.source ?? 'none');
       assert.equal(d.stale, !!exp.stale);
+      if (exp.tenant_source !== undefined) assert.equal(d.tenantSource, exp.tenant_source);
       if (!coarse) assert.equal(d.tenantId, world.id('tenant', exp.tenant));
       assert.equal(d.viaTenant, world.id('tenant', exp.via_tenant));
       if (exp.allow) assert.deepEqual([...d.roles].sort(), exp.roles);
@@ -155,5 +157,33 @@ test('extraction never throws, whatever the headers hold', () => {
 test('shared route-policy vectors', async (t) => {
   for (const c of VECTORS.route_policy.cases) {
     await t.test(c.id, () => assert.equal(routeAllowed(c.routes, c.method, c.path), c.allow, `${c.method} ${JSON.stringify(c.path)}`));
+  }
+});
+
+// ---- resource lookups (platform C0f): who owns a service-local id? -----------------------------------------
+test('shared lookup vectors', async (t) => {
+  const keys = await newClerkKeys();
+  for (const c of VECTORS.lookups.cases) {
+    await t.test(c.id, async () => {
+      const { fake, auth, advance } = await setup({ ask: {} }, keys);
+      const mode = c.snapshot || 'fresh';
+      if (mode === 'no-resources-field') fake.omitResources = true;
+      if (mode === 'stale' || mode === 'beyond-stale') {
+        await auth.cache.get(); // primed while the platform is up
+        advance(mode === 'stale' ? 120 : 400);
+      }
+      if (mode !== 'fresh' && mode !== 'no-resources-field') fake.down = true;
+
+      const a = c.args;
+      const tenant = a.tenant_raw ?? (a.tenant ? world.id('tenant', a.tenant) : undefined);
+      const got = c.call === 'tenantFor' ? await auth.tenantFor(a.kind, a.local_id) : await auth.resourcesFor(tenant, a.kind);
+
+      const e = c.expect;
+      assert.equal(got.ok, e.ok);
+      if (!e.ok) return assert.deepEqual([got.reason, got.status], [e.reason, e.status]);
+      if (c.call === 'tenantFor') assert.equal(got.tenantId, e.tenant === null ? null : world.id('tenant', e.tenant));
+      else assert.deepEqual(got.ids, e.ids);
+      assert.equal(got.stale, e.stale);
+    });
   }
 });

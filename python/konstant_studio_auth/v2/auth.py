@@ -32,6 +32,7 @@ from .credentials import extract
 from .decision import decide_offline, scope_allows
 from .platform_client import PlatformClient, PlatformUnavailable
 from .reasons import status_for
+from .resources import ids_of, owner_of
 from .service_keys import ServiceKeyResolver, route_allowed
 from .snapshot_cache import SnapshotCache
 
@@ -378,7 +379,23 @@ class Auth:
             if principal.kind == "service":
                 return Result(False, "service_principal_not_granted", principal=principal)
 
-            picked = await self._select_tenant(resource.get("tenant"), resource.get("tenant_hint"), principal, request)
+            # tenant_of: the tenant is whoever OWNS the object about to be touched (platform registry). Unowned or
+            # unreadable => denied here; an explicit tenant that disagrees with the owner => tenant_mismatch.
+            explicit = resource.get("tenant")
+            owner_source = None
+            if resource.get("tenant_of"):
+                lk = await self.tenant_for(resource["tenant_of"].get("kind"), resource["tenant_of"].get("local_id"))
+                if not lk["ok"]:
+                    return Result(False, "platform_unavailable", principal=principal)
+                if lk["tenant_id"] is None:
+                    return Result(False, "resource_not_owned", principal=principal)
+                if explicit and str(explicit).lower() != str(lk["tenant_id"]).lower():
+                    return Result(False, "tenant_mismatch", principal=principal)
+                explicit = lk["tenant_id"]
+                owner_source = "resource"
+            picked = await self._select_tenant(explicit, resource.get("tenant_hint"), principal, request)
+            if owner_source and picked.get("source") == "explicit":
+                picked["source"] = owner_source
             if picked.get("unavailable"):
                 return Result(False, "platform_unavailable", principal=principal)
             if picked.get("org_unmapped"):
@@ -389,7 +406,7 @@ class Auth:
             # 422 as an outage (a client mistake must not look like platform_unavailable).
             if tenant and not _UUID_RE.fullmatch(str(tenant)):
                 return Result(False, "tenant_not_found", principal=principal)
-            scoped = {k: v for k, v in resource.items() if k != "tenant_hint"}
+            scoped = {k: v for k, v in resource.items() if k not in ("tenant_hint", "tenant_of")}
             scoped.update(tenant=tenant, tenant_source=tenant_source)
 
             offline_eligible = (
@@ -534,6 +551,80 @@ class Auth:
         except Exception as err:  # noqa: BLE001
             self.config.logger.error(f"auth: unexpected {type(err).__name__} while deciding")
             return self._audited(Result(False, "platform_unavailable"), "service_caller", None)
+
+    # ---- resource lookups (platform C0f) ----------------------------------------------------------------
+
+    async def _resource_index(self):
+        """tenant_for / resources_for answer from the cached snapshot's `resources` (this service's local ids per
+        tenant). Read lookups: a stale snapshot is served inside the usual bounded-age window, and the answer
+        says so (`stale`). "Could not tell" is unavailable (503), never None/[]."""
+        if not self.cache:
+            return None
+        snap = await self.cache.get()
+        if snap.state == "none":
+            return None
+        index = self.cache.resource_index(self.config.max_resources, self.config.logger)
+        if index is None or not index.supported or index.too_large:
+            return None
+        return index, snap.state == "stale"
+
+    @staticmethod
+    def _unavailable():
+        return {"ok": False, "reason": "platform_unavailable", "status": 503}
+
+    async def tenant_for(self, kind, local_id):
+        """-> {ok True, tenant_id: str | None, stale} | {ok False, reason, status}. tenant_id None = nobody
+        owns that local id (callers deny). Never raises."""
+        try:
+            r = await self._resource_index()
+            if r is None:
+                return self._unavailable()
+            return {"ok": True, "tenant_id": owner_of(r[0], kind, local_id), "stale": r[1]}
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            self.config.logger.error(f"auth: unexpected {type(err).__name__} in tenant_for")
+            return self._unavailable()
+
+    async def resources_for(self, tenant_id, kind):
+        """-> {ok True, ids: sorted list, stale} | {ok False, reason, status}. Never raises."""
+        try:
+            r = await self._resource_index()
+            if r is None:
+                return self._unavailable()
+            return {"ok": True, "ids": ids_of(r[0], tenant_id, kind), "stale": r[1]}
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            self.config.logger.error(f"auth: unexpected {type(err).__name__} in resources_for")
+            return self._unavailable()
+
+    async def authorize_resource_in_tenant(self, decision=None, kind=None, local_id=None):
+        """"Is the object I am about to touch in the tenant this request was decided for?" Run AFTER a
+        successful authorize(): `decision` is its result. Deny by default: an unowned object is
+        resource_not_owned, a different tenant is tenant_mismatch, an unreadable registry is a 503."""
+        try:
+            principal = getattr(decision, "principal", None)
+            if decision is None or getattr(decision, "allow", None) is not True or not decision.tenant_id:
+                # no decision to compare against: refuse, never assume
+                res = Result(False, "tenant_mismatch", principal=principal)
+            else:
+                lk = await self.tenant_for(kind, local_id)
+                if not lk["ok"]:
+                    res = Result(False, "platform_unavailable", principal=principal)
+                elif lk["tenant_id"] is None:
+                    res = Result(False, "resource_not_owned", principal=principal, tenant_id=decision.tenant_id)
+                elif str(lk["tenant_id"]).lower() != str(decision.tenant_id).lower():
+                    res = Result(False, "tenant_mismatch", principal=principal, tenant_id=decision.tenant_id)
+                else:
+                    res = Result(True, "allowed", principal=principal, tenant_id=decision.tenant_id, via_tenant=decision.via_tenant,
+                                 roles=decision.roles, source="offline", stale=lk["stale"], tenant_source="resource")
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            self.config.logger.error(f"auth: unexpected {type(err).__name__} while checking a resource")
+            res = Result(False, "platform_unavailable")
+        return self._audited(res, "resource_in_tenant", None)
 
     @staticmethod
     def assert_tenant(res, tenant_id):

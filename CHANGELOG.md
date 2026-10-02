@@ -2,6 +2,17 @@
 
 Semantic versioning. v1 exports are never removed in a minor release; they are deprecated first, with a notice and a documented removal condition.
 
+## 0.3.0 — resource lookups (C0c2)
+
+### Added
+- `tenantFor(kind, localId)` and `resourcesFor(tenantId, kind)` (Python: `tenant_for`, `resources_for`): ownership lookups from the cached snapshot's per-tenant `resources` (platform C0f), so adopting repos keep no brand/company-to-tenant mapping. Fail closed (unavailable when the registry cannot be read or the platform has no C0f), `null` for an unowned id, refusal of an id claimed by two tenants, a reverse index built once per snapshot and bounded by `maxResources`.
+- `tenantOf: { kind, id }` scope option (Express, Next.js, FastAPI `tenant_of`): the tenant is the owner of the object about to be touched; unowned is `403 resource_not_owned`, a conflicting explicit tenant `403 tenant_mismatch`, an unreadable registry `503`.
+- `requireResourceInTenant` (Express), `checkResourceInTenant` (Next.js), `require_resource_in_tenant` (FastAPI): after a decision, refuse an object that belongs to another tenant.
+- Shared vectors: 29 lookup cases and 8 `tenantOf` decision cases for both languages.
+
+### Not yet verified against the real platform
+- The `resources` snapshot field is C0f, which is not in a committed platform build yet. The lookups and `tenantOf` run against the shared vectors and a fake platform that builds the field exactly as the C0f work in progress does; the e2e parity runners skip those cases ("pending-platform: C0f") until the pin moves to a commit that has it.
+
 ## 0.2.0 — control-plane authorization (v2)
 
 ### Final fixes (CoS verdict 2, on 13ae0c4)

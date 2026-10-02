@@ -78,7 +78,16 @@ class World:
         cats = ROLE_CATEGORIES[role["slug"]]
         return [f"{p['service']}:{p['action']}" for p in self.spec["catalog"] if p["category"] in cats]
 
-    def snapshot(self, service, version=100, ttl=30, stale=300):
+    def resources_of(self, service, tenant_ref):
+        """This service's ACTIVE resources of one tenant, as the platform's snapshot lists them (ordered by kind, local id)."""
+        rows = [
+            {"kind": r["kind"], "local_id": r["local_id"]} for r in self.spec.get("resources", [])
+            if r["tenant"] == tenant_ref and r["service"] == service and r.get("status", "active") == "active"
+        ]
+        return sorted(rows, key=lambda r: (r["kind"], r["local_id"]))
+
+    def snapshot(self, service, version=100, ttl=30, stale=300, with_resources=True):
+        """`with_resources=False` leaves the C0f `resources` field out (a platform that does not have it yet)."""
         """What GET /v1/authorize/snapshot?service=<service> returns for this world at now_ms."""
         s = self.spec
         tenant_by_ref = {t["ref"]: t for t in s["tenants"]}
@@ -103,6 +112,7 @@ class World:
                 "id": self.id("tenant", t["ref"]), "slug": t["ref"], "type": t["type"], "org_id": t.get("org_id"),
                 "parent_id": self.id("tenant", t["parent"]), "ancestors": [self.id("tenant", a) for a in ancestors(t["ref"])],
                 "plan": e.get("plan"), "limits": {}, "starts_at": iso(e.get("starts_in_s")), "ends_at": iso(e.get("ends_in_s")),
+                **({"resources": self.resources_of(service, t["ref"])} if with_resources else {}),
             }
             for e, t in sorted(((e, tenant_by_ref[e["tenant"]]) for e in entitled), key=lambda x: x[1]["ref"])
         ]
@@ -210,6 +220,7 @@ class FakePlatform:
         self.snapshot_version = 100
         self.events = []
         # Test controls: a platform that throttles, holds a resolution open, or answers malformed.
+        self.omit_resources = False  # a platform without C0f: no `resources` in the snapshot
         self.throttle_resolve = 0  # seconds: answer resolve with 429 + Retry-After
         self.gate = None  # an asyncio.Event/Future: resolve waits for it
         self.override = None  # fn(path, body) -> dict | httpx.Response | None
@@ -264,7 +275,7 @@ class FakePlatform:
                 return r if isinstance(r, httpx.Response) else _json(r)
 
         if method == "GET" and u.path == "/v1/authorize/snapshot":
-            snap = w.snapshot(parse_qs(u.query)["service"][0], version=self.snapshot_version)
+            snap = w.snapshot(parse_qs(u.query)["service"][0], version=self.snapshot_version, with_resources=not self.omit_resources)
             etag = '"' + hashlib.sha256(json.dumps({**snap, "version": 0}, sort_keys=True).encode()).hexdigest()[:32] + '"'
             if request.headers.get("if-none-match") == etag:
                 return httpx.Response(304, headers={"etag": etag})

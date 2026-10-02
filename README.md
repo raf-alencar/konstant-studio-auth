@@ -299,6 +299,31 @@ app.use('/internal', auth.express.requireServiceCaller({
 
 **Effective permissions** (`auth.effectivePermissions({ headers, tenant, service })`) returns what the platform says a principal may do in a tenant, computed by the same code path as `/v1/authorize`, with `permits(permission, {brand, domain, mailbox})` applying its documented rule (allowed iff *some* scope entry admits the resource). Use it to decide what to show or list; it is information, not a gate (enforcement is `requirePermission`). A parity test checks `permits` against `/v1/authorize` over the vectors.
 
+### Resource lookups: who owns this local id? (platform C0f)
+
+The platform owns the brand/company ↔ tenant crosswalk; an adopting repo keeps **no mapping of its own**. Each snapshot tenant carries `resources: [{ kind, local_id }]` for *this service only* (active rows; a retired resource is simply absent), and the library answers from it, offline:
+
+```js
+await auth.tenantFor('channel', 'ch_123');     // { ok: true, tenantId: '<uuid>' | null, stale }  (null = nobody owns it: deny)
+await auth.resourcesFor(tenantId, 'channel');   // { ok: true, ids: ['ch_123', ...], stale }       ([] when none)
+// unreadable / unsupported registry: { ok: false, reason: 'platform_unavailable', status: 503 }  -> return 503, never guess
+```
+
+- **Fail closed.** No usable snapshot, or one older than the stale-read window, is *unavailable*. A snapshot from a platform **without** C0f (no `resources` field) is also *unavailable*, never "unowned": "this platform cannot tell" must not read as "nobody owns it". A local id with no owner is `null`. An id the snapshot gives to two tenants (a platform bug) is refused (`null`) and logged once. A stale snapshot is served only inside the usual bounded-age window and the answer says `stale: true`.
+- **Cheap and bounded.** The reverse index is built once per snapshot and reused (a `304` keeps it); memory is capped by `maxResources` (default 100000, beyond which lookups are refused). Matching is exact and case-sensitive; an integer id is the same as its decimal text; `kind` is part of the key.
+- **Helpers, so repos do not hand-roll tenant checks.**
+
+```js
+// The tenant IS the owner of the object about to be touched (decided in one call):
+app.get('/channels/:id', auth.express.requirePermission('video:read', { tenantOf: { kind: 'channel', id: (req) => req.params.id } }), handler);
+// ...or decide the tenant elsewhere, then check the object belongs to it (403 otherwise):
+app.get('/t/:tenant/channels/:id', auth.express.requirePermission('video:read', { tenant: (req) => req.params.tenant }),
+        auth.express.requireResourceInTenant('channel', (req) => req.params.id), handler);
+// Next.js: scope { tenantOf } in withPermission, and `await auth.next.checkResourceInTenant(decision, kind, id)` (null = fine, else a Response).
+// FastAPI: Depends(auth.require_permission('video:read', tenant_of=('channel', lambda r: r.path_params['id']))) and Depends(auth.require_resource_in_tenant('channel', ...)).
+```
+`tenantOf` runs only after the credential is verified (an anonymous caller cannot probe ownership). Unowned: `403 resource_not_owned`. An explicit tenant that differs from the owner: `403 tenant_mismatch`. Unreadable registry: `503`. The owner then goes through the normal decision (the user still needs a membership in it); an agent key bound to another tenant is `wrong_tenant`. Denial bodies carry only the reason: nothing about who owns what. Local ids stay out of audit events (`tenant_source: 'resource'` says where the tenant came from).
+
 ### Environment
 
 | Var | Purpose |
@@ -312,6 +337,7 @@ app.use('/internal', auth.express.requireServiceCaller({
 | `SNAPSHOT_TTL_SECONDS` / `SNAPSHOT_STALE_READ_TTL_SECONDS` | Cache lifetime / how long reads survive a platform outage (defaults 30 / 300; the snapshot's own values win). |
 | `AUTH_EVENT_POLL_SECONDS` | Change-feed poll interval (default 5; `0` disables). |
 | `AUTH_STEP_UP_MAX_AGE_MINUTES` | Max age of the second factor for `stepUp` (default 10). |
+| `maxResources` (option) | Cap on the resource lookup index (default 100000). |
 | `AUTH_ACCEPTED_CALLER_SERVICES` | Comma-separated catalog services whose inbound `stgs_` keys this app accepts (or `acceptedCallerServices`). Empty = refuse every service key. |
 
 Step-up reads Clerk's `fva` session claim (`[minutes since first factor, minutes since second]`, `-1` = none). **Not yet confirmed against this Clerk instance's token shape, and Raf must enable multi-factor sign-in first**: until the `fva` claim is confirmed present in this deployment's session token, every `stepUp` check is denied (`step_up_required`, with a message saying MFA must be enabled and the claim present). Do not rely on `requireApprover({ stepUp })` until that is confirmed.

@@ -71,7 +71,7 @@ test('parity with the scratch platform', async (t) => {
     const seeded = ctx.world.constructor;
     const atSeed = new seeded(undefined, { includeTransient: false });
     atSeed.nowMs = ctx.state.seeded_at_ms;
-    const built = atSeed.snapshot('docs');
+    const built = atSeed.snapshot('docs', { withResources: false }); // the pinned platform build has no C0f `resources` yet
 
     const roleSlug = new Map([...real.roles, ...built.roles].map((r) => [r.id, r.slug]));
     const norm = (s) => ({
@@ -93,8 +93,8 @@ test('parity with the scratch platform', async (t) => {
   });
 
   for (const c of VECTORS.cases) {
-    if (c.pending || c.platform === 'down' || c.parity === false) {
-      await t.test(c.id, { skip: c.pending || c.parity_note || 'needs a down platform: covered by the unit vectors' }, () => {});
+    if (c.pending || c.requires_platform || c.platform === 'down' || c.parity === false) {
+      await t.test(c.id, { skip: c.pending || (c.requires_platform && `pending-platform: ${c.requires_platform} is not in the pinned platform build yet`) || c.parity_note || 'needs a down platform: covered by the unit vectors' }, () => {});
       continue;
     }
     if (c.resolve_only) {

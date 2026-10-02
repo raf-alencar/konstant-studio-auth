@@ -20,7 +20,7 @@ function int(value, fallback) {
 const KNOWN_OPTIONS = new Set([
   'service', 'platformUrl', 'platformKey', 'clerk', 'snapshot', 'pollIntervalSeconds', 'requestTimeoutMs',
   'stepUpMaxAgeMinutes', 'acceptedCallerServices', 'serviceKeyCache', 'upgradeUrl', 'tenantResolver',
-  'onEvent', 'now', 'monotonic', 'fetch', 'logger',
+  'onEvent', 'now', 'monotonic', 'fetch', 'logger', 'maxResources',
 ]);
 
 // Numeric options are validated at startup: a zero or negative limit is a loop or an
@@ -93,6 +93,8 @@ function resolveConfig(opts = {}, env = process.env) {
       maxInflight: positive('serviceKeyCache.maxInflight', opts.serviceKeyCache?.maxInflight ?? 8, { integer: true }),
     },
     upgradeUrl: opts.upgradeUrl ?? env.AUTH_UPGRADE_URL ?? 'https://www.konstant-studio.com/dashboard',
+    // Upper bound on the resource lookup index (memory stays bounded; beyond it lookups are refused).
+    maxResources: positive('maxResources', opts.maxResources ?? 100000, { integer: true }),
     tenantResolver: opts.tenantResolver ?? null,
     onEvent: opts.onEvent ?? null,
     // Wall clock: token expiry, entitlement windows, membership expiry. Monotonic clock: how old a

@@ -69,6 +69,18 @@ function expressAdapter(core) {
         return next();
       };
     },
+    // After requirePermission: refuse unless the object about to be touched belongs to the tenant the request
+    // was decided for. `id` is (req) => the object's local id. 403 when it is unowned or another tenant's.
+    requireResourceInTenant: (kind, id) => async (req, res, next) => {
+      let d;
+      try {
+        d = await core.authorizeResourceInTenant({ decision: req.authDecision, kind, localId: typeof id === 'function' ? await id(req) : id });
+      } catch (err) {
+        cfg.logger.error(`auth middleware: unexpected ${err?.name || 'error'}`);
+        d = { allow: false, reason: 'platform_unavailable', status: 503 };
+      }
+      return d.allow ? next() : send(res, d);
+    },
     assertTenant: (req, tenantId) => core.assertTenant(req.authDecision, tenantId),
     usageContext: (req) => core.usageContext(req.authDecision, cleanRunId(req.headers['x-run-id'])),
   };

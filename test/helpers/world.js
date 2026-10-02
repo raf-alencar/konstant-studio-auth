@@ -60,8 +60,17 @@ class World {
     return this.spec.catalog.filter((p) => cats.includes(p.category)).map((p) => `${p.service}:${p.action}`);
   }
 
+  // This service's ACTIVE resources of one tenant, as the platform's snapshot lists them (ordered by kind, local id).
+  resourcesOf(service, tenantRef) {
+    return (this.spec.resources || [])
+      .filter((r) => r.tenant === tenantRef && r.service === service && (r.status ?? 'active') === 'active')
+      .map((r) => ({ kind: r.kind, local_id: r.local_id }))
+      .sort((a, b) => a.kind.localeCompare(b.kind) || a.local_id.localeCompare(b.local_id));
+  }
+
   // What GET /v1/authorize/snapshot?service=<service> returns for this world at `nowMs`.
-  snapshot(service, { version = 100, ttl = 30, stale = 300 } = {}) {
+  // `withResources: false` leaves the C0f `resources` field out (a platform that does not have it yet).
+  snapshot(service, { version = 100, ttl = 30, stale = 300, withResources = true } = {}) {
     const s = this.spec;
     const tenantById = new Map(s.tenants.map((t) => [t.ref, t]));
     const ancestors = (ref) => {
@@ -79,6 +88,7 @@ class World {
         id: this.id('tenant', t.ref), slug: t.ref, type: t.type, org_id: t.org_id ?? null,
         parent_id: this.id('tenant', t.parent), ancestors: ancestors(t.ref).map((a) => this.id('tenant', a)),
         plan: e.plan ?? null, limits: {}, starts_at: iso(e.starts_in_s), ends_at: iso(e.ends_in_s),
+        ...(withResources ? { resources: this.resourcesOf(service, t.ref) } : {}),
       }));
     const tenantIds = new Set(entitled.map((e) => e.tenant));
     const relevant = new Set(tenantIds);
@@ -212,7 +222,7 @@ class FakePlatform {
     }
 
     if (method === 'GET' && u.pathname === '/v1/authorize/snapshot') {
-      const snap = this.world.snapshot(u.searchParams.get('service'), { version: this.snapshotVersion });
+      const snap = this.world.snapshot(u.searchParams.get('service'), { version: this.snapshotVersion, withResources: !this.omitResources });
       const etag = `"${crypto.createHash('sha256').update(JSON.stringify({ ...snap, version: 0 })).digest('hex').slice(0, 32)}"`;
       if (init.headers?.['If-None-Match'] === etag) return new Response(null, { status: 304, headers: { etag } });
       return this._json(snap, 200, { etag });

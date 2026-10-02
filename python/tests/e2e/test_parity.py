@@ -20,7 +20,7 @@ from .helpers import bearer, library_for, platform_authorize, psql
 
 def _cases():
     for c in VECTORS["cases"]:
-        reason = c.get("pending") or (c.get("parity_note") if c.get("parity") is False else None) or (
+        reason = ("pending-platform: C0f is not in the pinned platform build yet" if c.get("requires_platform") else None) or c.get("pending") or (c.get("parity_note") if c.get("parity") is False else None) or (
             "needs a down platform: covered by the unit vectors" if c.get("platform") == "down" else None
         )
         yield pytest.param(c, id=c["id"], marks=[pytest.mark.skip(reason=reason)] if reason else [])
@@ -37,7 +37,7 @@ def test_fixture_world_builds_the_snapshot_the_platform_serves(ctx):
     # The world's windows and expiries are offsets from the moment the scratch DB was seeded.
     at_seed = World(include_transient=False)
     at_seed.now_ms = ctx.state["seeded_at_ms"]
-    built = at_seed.snapshot("docs")
+    built = at_seed.snapshot("docs", with_resources=False)  # the pinned platform has no C0f resources yet
 
     role_slug = {r["id"]: r["slug"] for r in [*real["roles"], *built["roles"]]}
 

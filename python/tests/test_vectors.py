@@ -40,6 +40,8 @@ def resource_for(c, world):
         r["tenant"] = world.id("tenant", ask["tenant"])
     if ask.get("tenant_hint"):
         r["tenant_hint"] = world.id("tenant", ask["tenant_hint"])  # the x-tenant header: the weakest source
+    if ask.get("tenant_of"):
+        r["tenant_of"] = {"kind": ask["tenant_of"]["kind"], "local_id": ask["tenant_of"]["local_id"]}
     if ask.get("tenant_raw"):
         r["tenant"] = ask["tenant_raw"]
     for f in ("brand", "domain", "mailbox"):
@@ -94,6 +96,8 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     assert d.via_tenant == world.id("tenant", exp.get("via_tenant"))
     if exp["allow"]:
         assert sorted(d.roles) == exp["roles"]
+    if exp.get("tenant_source") is not None:
+        assert d.tenant_source == exp["tenant_source"]
     if "sensitive" in exp and not coarse:
         assert d.sensitive == bool(exp["sensitive"])
 
@@ -149,3 +153,34 @@ def test_extraction_never_raises_whatever_the_headers_hold():
 @pytest.mark.parametrize("c", VECTORS["route_policy"]["cases"], ids=lambda c: c["id"])
 def test_shared_route_policy_vector(c):
     assert route_allowed(c["routes"], c["method"], c["path"]) is c["allow"], f"{c['method']} {c['path']!r}"
+
+
+# ---- resource lookups (platform C0f): who owns a service-local id? --------------------------------------
+
+
+@pytest.mark.parametrize("c", VECTORS["lookups"]["cases"], ids=lambda c: c["id"])
+async def test_shared_lookup_vector(c, make_harness, world):
+    h = make_harness()
+    mode = c.get("snapshot", "fresh")
+    if mode == "no-resources-field":
+        h.fake.omit_resources = True
+    if mode in ("stale", "beyond-stale"):
+        await h.auth.cache.get()  # primed while the platform is up
+        h.advance(120 if mode == "stale" else 400)
+    if mode not in ("fresh", "no-resources-field"):
+        h.fake.down = True
+
+    a = c["args"]
+    tenant = a.get("tenant_raw") or (world.id("tenant", a["tenant"]) if a.get("tenant") else None)
+    got = await h.auth.tenant_for(a.get("kind"), a.get("local_id")) if c["call"] == "tenantFor" else await h.auth.resources_for(tenant, a.get("kind"))
+
+    e = c["expect"]
+    assert got["ok"] is e["ok"]
+    if not e["ok"]:
+        assert (got["reason"], got["status"]) == (e["reason"], e["status"])
+        return
+    if c["call"] == "tenantFor":
+        assert got["tenant_id"] == (None if e["tenant"] is None else world.id("tenant", e["tenant"]))
+    else:
+        assert got["ids"] == e["ids"]
+    assert got["stale"] is e["stale"]

@@ -71,6 +71,16 @@ def rsa_public_jwk(pem: str, kid: str) -> dict:
     return {"kty": "RSA", "alg": "RS256", "use": "sig", "kid": kid, "n": b64u(pub.n), "e": b64u(pub.e)}
 
 
+def require_free_port(port: int, what: str) -> None:
+    """Refuse to start on a port something else already holds. A silent clash is worse than an error: the
+    state file would point at somebody else's process and every test would fail in a confusing way."""
+    import socket
+
+    with socket.socket() as sock:
+        if sock.connect_ex(("127.0.0.1", port)) == 0:
+            sys.exit(f"port {port} ({what}) is already in use: pass a free one (--port / --jwks-port)")
+
+
 def wait_http(url: str, seconds: float = 30) -> None:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -176,16 +186,19 @@ def start(args) -> None:
 
     asyncio.run(reset())
 
+    jwks_port = args.jwks_port or args.port + 1
+    require_free_port(args.port, "platform")
+    require_free_port(jwks_port, "fake Clerk JWKS")
     clerk_pem, ed_pem = keypair_pems()
     kid = "kid-scratch-clerk"
     # One JWKS directory per state file, so two scratch instances never overwrite each other's signing key.
     jwks_dir = state_path.parent / f"jwks-{state_path.stem}"
     jwks_dir.mkdir(exist_ok=True)
     (jwks_dir / "jwks.json").write_text(json.dumps({"keys": [rsa_public_jwk(clerk_pem, kid)]}))
-    jwks_port = args.jwks_port or args.port + 1
     jwks = subprocess.Popen([sys.executable, "-m", "http.server", str(jwks_port), "--bind", "127.0.0.1", "--directory", str(jwks_dir)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    wait_http(f"http://127.0.0.1:{jwks_port}/jwks.json", 10)  # OUR server must be the one answering
     shared_key = "fake-shared-" + secrets.token_urlsafe(24)
     env = {
         **os.environ,

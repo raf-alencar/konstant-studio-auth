@@ -35,7 +35,7 @@ def _first(*values):
 _KNOWN_OPTIONS = {
     "service", "platform_url", "platform_key", "clerk", "snapshot", "poll_interval_seconds", "request_timeout_ms",
     "step_up_max_age_minutes", "accepted_caller_services", "service_key_cache", "upgrade_url", "tenant_resolver",
-    "on_event", "now", "monotonic", "logger",
+    "on_event", "now", "monotonic", "logger", "max_resources",
 }
 
 
@@ -133,6 +133,8 @@ def resolve_config(opts=None, env=None):
         upgrade_url=_first(
             opts.get("upgrade_url"), env.get("AUTH_UPGRADE_URL"), "https://www.konstant-studio.com/dashboard"
         ),
+        # Upper bound on the resource lookup index (memory stays bounded; beyond it lookups are refused).
+        max_resources=_positive("max_resources", _first(opts.get("max_resources"), 100000), integer=True),
         tenant_resolver=opts.get("tenant_resolver"),
         on_event=opts.get("on_event"),
         # Wall clock: token expiry, entitlement windows, membership expiry. Monotonic clock: how old a

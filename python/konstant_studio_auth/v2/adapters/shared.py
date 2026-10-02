@@ -22,6 +22,16 @@ async def resolve_scope(scope, *args):
                 v = await v
         if v is not None and v != "":
             out[field] = str(v)
+    # tenant_of=(kind, id): the tenant is the OWNER of that object, looked up in the platform's registry by
+    # the core (so an unowned or unreadable object is denied, never guessed at).
+    spec = (scope or {}).get("tenant_of")
+    if spec:
+        kind, ident = spec
+        if callable(ident):
+            ident = ident(*args)
+            if inspect.isawaitable(ident):
+                ident = await ident
+        out["tenant_of"] = {"kind": kind, "local_id": ident}
     return out
 
 

@@ -6,6 +6,7 @@
 //     at most stale_read_ttl_seconds, then nothing may be answered from it.
 
 const { PlatformUnavailable } = require('./platform-client');
+const { buildIndex } = require('./resources');
 
 const RETRY_AFTER_FAILURE_MS = 1000;
 
@@ -55,6 +56,14 @@ class SnapshotCache {
     }
     if (this.entry && this.now() - this.entry.fetchedAt <= this._staleMs()) return this._view('stale');
     return { state: 'none' };
+  }
+
+  // The resource reverse-lookup index of the CURRENT snapshot, built on first use and kept with the entry:
+  // a new snapshot replaces the entry (and so the index); a 304 keeps both. No per-request scan.
+  resourceIndex(opts) {
+    if (!this.entry) return null;
+    if (!this.entry.index) this.entry.index = buildIndex(this.entry.body, opts);
+    return this.entry.index;
   }
 
   _view(state) {

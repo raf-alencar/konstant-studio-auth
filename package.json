@@ -1,6 +1,6 @@
 {
   "name": "@konstant-studio/auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared Clerk + Cloudflare Access auth middleware and control-plane authorization (v2) for StigHive and Konstant Studio services.",
   "main": "index.js",
   "files": [
@@ -14,7 +14,7 @@
     "docs/"
   ],
   "scripts": {
-    "test": "node --test test/vectors.test.js test/unit.test.js test/service-keys.test.js test/effective.test.js test/hardening.test.js test/legacy.test.js",
+    "test": "node --test test/vectors.test.js test/unit.test.js test/service-keys.test.js test/effective.test.js test/hardening.test.js test/resources.test.js test/legacy.test.js",
     "test:e2e": "node --test test/e2e/*.test.js",
     "test:smoke": "node --test test/pack-smoke.test.js"
   },

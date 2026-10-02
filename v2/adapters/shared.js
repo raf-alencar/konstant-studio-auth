@@ -13,6 +13,12 @@ async function resolveScope(scope = {}, ...args) {
     const value = typeof v === 'function' ? await v(...args) : v;
     if (value !== undefined && value !== null && value !== '') out[field] = String(value);
   }
+  // tenantOf: { kind, id } -- the tenant is the OWNER of that object, looked up in the platform's
+  // registry by the core (so an unowned or unreadable object is denied, never guessed at).
+  if (scope.tenantOf) {
+    const id = typeof scope.tenantOf.id === 'function' ? await scope.tenantOf.id(...args) : scope.tenantOf.id;
+    out.tenantOf = { kind: scope.tenantOf.kind, localId: id };
+  }
   return out;
 }
 

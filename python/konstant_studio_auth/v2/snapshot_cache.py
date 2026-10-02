@@ -9,6 +9,7 @@ body itself (docs/control-plane.md "Snapshot and caching rules"):
 import asyncio
 
 from .platform_client import PlatformUnavailable
+from .resources import build_index
 
 RETRY_AFTER_FAILURE_MS = 1000
 
@@ -23,10 +24,11 @@ class SnapshotView:
 
 
 class _Entry:
-    __slots__ = ("body", "etag", "fetched_at", "invalidated")
+    __slots__ = ("body", "etag", "fetched_at", "invalidated", "index")
 
     def __init__(self, body, etag, fetched_at):
         self.invalidated = False
+        self.index = None
         self.body = body
         self.etag = etag
         self.fetched_at = fetched_at
@@ -79,6 +81,15 @@ class SnapshotCache:
         if self.entry and self.now() - self.entry.fetched_at <= self._stale_ms():
             return self._view("stale")
         return SnapshotView("none")
+
+    def resource_index(self, max_resources, logger):
+        """The resource reverse-lookup index of the CURRENT snapshot, built on first use and kept with the
+        entry: a new snapshot replaces the entry (and so the index); a 304 keeps both. No per-request scan."""
+        if not self.entry:
+            return None
+        if self.entry.index is None:
+            self.entry.index = build_index(self.entry.body, max_resources, logger)
+        return self.entry.index
 
     def _view(self, state):
         return SnapshotView(state, self.entry.body, int((self.now() - self.entry.fetched_at) // 1000))

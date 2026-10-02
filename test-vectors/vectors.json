@@ -4,7 +4,8 @@
   "contract": {
     "platform_commit": "833538787f7bf4416909dbcf79ed397337ece0fe",
     "platform_branch": "feat/control-plane-c0a-c0b",
-    "note": "Pinned at the accepted C0b2 with its fixes (guard first, mandatory expect_service, uniform key_not_found, audit bounds)."
+    "note": "Pinned at the accepted C0b2 with its fixes (guard first, mandatory expect_service, uniform key_not_found, audit bounds).",
+    "resources_note": "The `resources` field of the snapshot (and the lookups / tenantOf cases that need it) is C0f, which is not yet in a committed platform build: the e2e parity runners skip every case marked requires_platform=C0f until the pin moves to a commit that has it."
   },
   "config": {
     "service": "docs",
@@ -582,6 +583,85 @@
         "routes": [
           "POST /v1/authorize"
         ]
+      }
+    ],
+    "resources": [
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-a",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-b",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-old",
+        "status": "retired"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "mailbox",
+        "local_id": "info@client.example",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "42",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "shared",
+        "status": "active"
+      },
+      {
+        "tenant": "acme_brand",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-child",
+        "status": "active"
+      },
+      {
+        "tenant": "globex",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-g",
+        "status": "active"
+      },
+      {
+        "tenant": "globex",
+        "service": "docs",
+        "kind": "account",
+        "local_id": "shared",
+        "status": "active"
+      },
+      {
+        "tenant": "dormant",
+        "service": "docs",
+        "kind": "brand",
+        "local_id": "brand-dormant",
+        "status": "active"
+      },
+      {
+        "tenant": "acme",
+        "service": "mail",
+        "kind": "mailbox",
+        "local_id": "ops@client.example",
+        "status": "active"
       }
     ]
   },
@@ -2305,6 +2385,213 @@
         "source": "offline"
       },
       "parity_tenant": "globex"
+    },
+    {
+      "id": "tenant-of-owned-resource",
+      "desc": "the tenant is the owner of the object about to be touched",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline",
+        "tenant_source": "resource"
+      },
+      "requires_platform": "C0f",
+      "parity_tenant": "acme"
+    },
+    {
+      "id": "tenant-of-unowned-resource",
+      "desc": "nobody owns it: denied, never guessed",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "nope"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "resource_not_owned",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      },
+      "requires_platform": "C0f",
+      "parity": false,
+      "parity_note": "decided by the library's registry lookup; the platform has no such question"
+    },
+    {
+      "id": "tenant-of-another-tenants-resource",
+      "desc": "alice is a member of acme only; the object is globex's: the decision is made in globex, where she has nothing",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-g"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "no_permission",
+        "status": 403,
+        "tenant": "globex",
+        "source": "offline",
+        "tenant_source": "resource"
+      },
+      "requires_platform": "C0f",
+      "parity_tenant": "globex"
+    },
+    {
+      "id": "tenant-of-conflicts-with-explicit-tenant",
+      "desc": "a route that names one tenant and an object owned by another",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-g"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_mismatch",
+        "status": 403,
+        "tenant": null,
+        "source": "none"
+      },
+      "requires_platform": "C0f",
+      "parity": false,
+      "parity_note": "decided by the library's registry lookup"
+    },
+    {
+      "id": "tenant-of-agrees-with-explicit-tenant",
+      "desc": "",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline",
+        "tenant_source": "resource"
+      },
+      "requires_platform": "C0f"
+    },
+    {
+      "id": "tenant-of-beats-org-claim-and-header",
+      "desc": "the object's owner is the tenant, not the token's org and not a header",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_hint": "acme",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-g"
+        }
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "globex",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline",
+        "tenant_source": "resource"
+      },
+      "requires_platform": "C0f",
+      "parity_tenant": "globex"
+    },
+    {
+      "id": "tenant-of-for-an-agent-key",
+      "desc": "an agent is bound to ONE tenant: asking about another tenant's object is wrong_tenant (the platform decides)",
+      "who": {
+        "key": "agent_acme_active"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-g"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "wrong_tenant",
+        "status": 403,
+        "tenant": null,
+        "source": "live"
+      },
+      "requires_platform": "C0f",
+      "parity_tenant": "globex"
+    },
+    {
+      "id": "tenant-of-registry-unavailable",
+      "desc": "cold cache and platform down: could not decide",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant_of": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        }
+      },
+      "expect": {
+        "allow": false,
+        "reason": "platform_unavailable",
+        "status": 503,
+        "tenant": null,
+        "source": "none"
+      },
+      "requires_platform": "C0f",
+      "platform": "down",
+      "cache_age_s": null
     }
   ],
   "extraction": {
@@ -2999,6 +3286,438 @@
         "method": "GET",
         "path": "/internal/status/a\\u2029b",
         "allow": false
+      }
+    ]
+  },
+  "lookups": {
+    "$comment": "tenantFor(kind, local_id) / resourcesFor(tenant, kind) from the cached snapshot (platform C0f resources). `snapshot`: fresh (default) | stale (platform down, cache older than its TTL, inside the stale-read window) | beyond-stale | cold-down | no-resources-field (a platform without C0f). Raw/odd arguments are given as-is (JSON null, number, object).",
+    "cases": [
+      {
+        "id": "owned-id",
+        "desc": "a local id this service has registered for a tenant",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "acme",
+          "stale": false
+        }
+      },
+      {
+        "id": "owned-by-another-tenant",
+        "desc": "the owner is reported whoever asks: comparing it with the caller's tenant is the caller's (or the helper's) job",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-g"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "globex",
+          "stale": false
+        }
+      },
+      {
+        "id": "unowned-id",
+        "desc": "nobody owns it: null, callers deny",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "nope"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "retired-resource",
+        "desc": "retired rows are absent from the snapshot",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-old"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "another-services-resource-is-invisible",
+        "desc": "the snapshot only carries THIS service's resources",
+        "call": "tenantFor",
+        "args": {
+          "kind": "mailbox",
+          "local_id": "ops@client.example"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "tenant-not-entitled-to-this-service",
+        "desc": "a tenant that is not entitled is not in the snapshot, so neither are its resources",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-dormant"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "same-local-id-two-kinds-a",
+        "desc": "kind is part of the key",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "shared"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "acme",
+          "stale": false
+        }
+      },
+      {
+        "id": "same-local-id-two-kinds-b",
+        "desc": "kind is part of the key",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "shared"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "globex",
+          "stale": false
+        }
+      },
+      {
+        "id": "kind-is-part-of-the-key",
+        "desc": "right id, wrong kind",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "integer-local-id",
+        "desc": "an integer id is the same as its decimal text",
+        "call": "tenantFor",
+        "args": {
+          "kind": "account",
+          "local_id": 42
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "acme",
+          "stale": false
+        }
+      },
+      {
+        "id": "case-sensitive",
+        "desc": "ids are exact",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "BRAND-A"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "empty-local-id",
+        "desc": "cannot name a resource",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": ""
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "empty-kind",
+        "desc": "cannot name a resource",
+        "call": "tenantFor",
+        "args": {
+          "kind": "",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "null-kind",
+        "desc": "cannot name a resource",
+        "call": "tenantFor",
+        "args": {
+          "kind": null,
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "non-scalar-local-id",
+        "desc": "an object is not an id",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": {
+            "a": 1
+          }
+        },
+        "expect": {
+          "ok": true,
+          "tenant": null,
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-a-kind",
+        "desc": "active ids only (the retired one is gone), sorted",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [
+            "brand-a",
+            "brand-b",
+            "shared"
+          ],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-another-kind",
+        "desc": "kinds are separate",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "mailbox"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [
+            "info@client.example"
+          ],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-another-tenant",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "globex",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [
+            "brand-g"
+          ],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-none-of-that-kind",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "globex",
+          "kind": "mailbox"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-tenant-not-in-the-snapshot",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "dormant",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-malformed-tenant",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant_raw": "not-a-uuid",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [],
+          "stale": false
+        }
+      },
+      {
+        "id": "resources-for-empty-kind",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": ""
+        },
+        "expect": {
+          "ok": true,
+          "ids": [],
+          "stale": false
+        }
+      },
+      {
+        "id": "stale-snapshot-served-inside-the-window",
+        "desc": "platform down, snapshot older than its TTL but inside the stale-read window: served, and says so",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": true,
+          "tenant": "acme",
+          "stale": true
+        },
+        "snapshot": "stale"
+      },
+      {
+        "id": "stale-resources-for",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": true,
+          "ids": [
+            "brand-a",
+            "brand-b",
+            "shared"
+          ],
+          "stale": true
+        },
+        "snapshot": "stale"
+      },
+      {
+        "id": "beyond-the-stale-window",
+        "desc": "fail closed: unavailable, never a guess",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": false,
+          "reason": "platform_unavailable",
+          "status": 503
+        },
+        "snapshot": "beyond-stale"
+      },
+      {
+        "id": "cold-cache-platform-down",
+        "desc": "",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": false,
+          "reason": "platform_unavailable",
+          "status": 503
+        },
+        "snapshot": "cold-down"
+      },
+      {
+        "id": "cold-cache-platform-down-resources-for",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": false,
+          "reason": "platform_unavailable",
+          "status": 503
+        },
+        "snapshot": "cold-down"
+      },
+      {
+        "id": "platform-without-the-resources-field",
+        "desc": "a platform without C0f cannot say who owns anything: UNAVAILABLE, never 'unowned'",
+        "call": "tenantFor",
+        "args": {
+          "kind": "brand",
+          "local_id": "brand-a"
+        },
+        "expect": {
+          "ok": false,
+          "reason": "platform_unavailable",
+          "status": 503
+        },
+        "snapshot": "no-resources-field"
+      },
+      {
+        "id": "platform-without-the-resources-field-resources-for",
+        "desc": "",
+        "call": "resourcesFor",
+        "args": {
+          "tenant": "acme",
+          "kind": "brand"
+        },
+        "expect": {
+          "ok": false,
+          "reason": "platform_unavailable",
+          "status": 503
+        },
+        "snapshot": "no-resources-field"
       }
     ]
   }

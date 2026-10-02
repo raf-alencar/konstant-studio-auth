@@ -70,8 +70,16 @@ function nextAdapter(core) {
     };
   }
 
+  // After authorizeRequest/withPermission: is the object about to be touched in the decided tenant?
+  // Returns null when fine, or a ready Response (403/503) to return.
+  async function checkResourceInTenant(decision, kind, localId) {
+    const d = await core.authorizeResourceInTenant({ decision, kind, localId });
+    return d.allow ? null : deny(d);
+  }
+
   return {
     authorizeRequest,
+    checkResourceInTenant,
     deny,
     withServiceCaller,
     withPermission: (permission, scope, handler) => wrap(permission, scope, handler),

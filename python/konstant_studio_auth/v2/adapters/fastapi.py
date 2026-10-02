@@ -11,6 +11,8 @@ On success: request.state.principal (Principal), request.state.auth_decision, an
 v1-shaped request.state.auth. On failure: 401 (credential), 403 (decision), 503 (could not decide).
 """
 
+import inspect
+
 from fastapi import HTTPException, Request
 
 from ..service_keys import validate_policy
@@ -68,19 +70,39 @@ def fastapi_adapter(core):
         request.state.auth = legacy_auth(d.principal, d)
         return d
 
-    def require_permission(permission, tenant=None, brand=None, domain=None, mailbox=None):
-        scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox}
+    def require_permission(permission, tenant=None, brand=None, domain=None, mailbox=None, tenant_of=None):
+        scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox, "tenant_of": tenant_of}
 
         async def dependency(request: Request):
             return await run(request, permission, scope)
 
         return dependency
 
-    def require_approver(permission, step_up=False, tenant=None, brand=None, domain=None, mailbox=None):
-        scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox}
+    def require_approver(permission, step_up=False, tenant=None, brand=None, domain=None, mailbox=None, tenant_of=None):
+        scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox, "tenant_of": tenant_of}
 
         async def dependency(request: Request):
             return await run(request, permission, scope, approver=True, step_up=step_up)
+
+        return dependency
+
+    def require_resource_in_tenant(kind, ident):
+        """After require_permission: refuse unless the object about to be touched belongs to the tenant the
+        request was decided for. `ident` is a local id or a callable(request) -> id (sync or async). 403 when
+        it is unowned or another tenant's, 503 when the registry cannot be read (or the callable raises)."""
+
+        async def dependency(request: Request):
+            try:
+                local_id = ident(request) if callable(ident) else ident
+                if inspect.isawaitable(local_id):
+                    local_id = await local_id
+                d = await core.authorize_resource_in_tenant(decision=getattr(request.state, "auth_decision", None), kind=kind, local_id=local_id)
+            except Exception as err:  # noqa: BLE001
+                cfg.logger.error(f"auth dependency: unexpected {type(err).__name__}")
+                raise fail(503, "platform_unavailable") from None
+            if not d.allow:
+                raise fail(d.status, d.reason)
+            return d
 
         return dependency
 
@@ -139,6 +161,7 @@ def fastapi_adapter(core):
     a.require_permission = require_permission
     a.require_approver = require_approver
     a.require_service_caller = require_service_caller
+    a.require_resource_in_tenant = require_resource_in_tenant
     a.events_webhook = events_webhook
     a.assert_tenant = lambda request, tenant_id: core.assert_tenant(getattr(request.state, "auth_decision", None), tenant_id)
     a.usage_context = lambda request: core.usage_context(getattr(request.state, "auth_decision", None), clean_run_id(request.headers.get("x-run-id")))

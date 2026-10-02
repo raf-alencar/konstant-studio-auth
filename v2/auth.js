@@ -25,6 +25,7 @@ const { extract } = require('./credentials');
 const { decideOffline } = require('./decision');
 const { ServiceKeyResolver, routeAllowed } = require('./service-keys');
 const { scopeAllows } = require('./decision');
+const { ownerOf, idsOf } = require('./resources');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTOR_KIND = { human: 'human', agent: 'agent', guest: 'guest', service: 'system' };
@@ -268,7 +269,22 @@ function createAuth(opts = {}) {
         return result({ allow: false, reason: 'service_principal_not_granted', principal });
       }
 
-      const picked = await selectTenant(resource.tenant, resource.tenantHint, principal, req);
+      // tenantOf: the tenant is whoever OWNS the object about to be touched (platform registry). Unowned or
+      // unreadable => denied here; an explicit tenant that disagrees with the owner => tenant_mismatch.
+      let explicit = resource.tenant;
+      let ownerSource = null;
+      if (resource.tenantOf) {
+        const lk = await tenantFor(resource.tenantOf.kind, resource.tenantOf.localId);
+        if (!lk.ok) return result({ allow: false, reason: 'platform_unavailable', principal });
+        if (lk.tenantId === null) return result({ allow: false, reason: 'resource_not_owned', principal });
+        if (explicit && String(explicit).toLowerCase() !== String(lk.tenantId).toLowerCase()) {
+          return result({ allow: false, reason: 'tenant_mismatch', principal });
+        }
+        explicit = lk.tenantId;
+        ownerSource = 'resource';
+      }
+      const picked = await selectTenant(explicit, resource.tenantHint, principal, req);
+      if (ownerSource && picked.source === 'explicit') picked.source = ownerSource;
       if (picked.unavailable) return result({ allow: false, reason: 'platform_unavailable', principal });
       if (picked.orgUnmapped) return result({ allow: false, reason: 'tenant_required', principal });
       const tenant = picked.tenant;
@@ -276,7 +292,7 @@ function createAuth(opts = {}) {
       // tenant: answer it here as a denial instead of sending it on and reporting the platform's 422
       // as an outage (a client mistake must not look like platform_unavailable).
       if (tenant && !UUID_RE.test(String(tenant))) return result({ allow: false, reason: 'tenant_not_found', principal });
-      const { tenantHint: _hint, ...rest } = resource;
+      const { tenantHint: _hint, tenantOf: _tenantOf, ...rest } = resource;
       const scoped = { ...rest, tenant, tenantSource: picked.source };
 
       const offlineEligible =
@@ -345,6 +361,69 @@ function createAuth(opts = {}) {
       actor: res?.principal ? res.principal.actor() : { kind: 'system', id: null },
       run_id: requestId ?? null,
     };
+  }
+
+  // ---- resource lookups (platform C0f) -------------------------------------------------------------
+  //
+  // tenantFor / resourcesFor answer from the cached snapshot's `resources` (this service's local ids per
+  // tenant). Read lookups: a stale snapshot is served inside the usual bounded-age window, and the answer
+  // says so (`stale`). Never throws; "could not tell" is { ok: false, status: 503 }, never null/[].
+  async function resourceIndex() {
+    if (!cache) return { ok: false };
+    const snap = await cache.get();
+    if (snap.state === 'none') return { ok: false };
+    const index = cache.resourceIndex({ maxResources: cfg.maxResources, logger: cfg.logger });
+    if (!index || !index.supported || index.tooLarge) return { ok: false };
+    return { ok: true, index, stale: snap.state === 'stale' };
+  }
+
+  const UNAVAILABLE = { ok: false, reason: 'platform_unavailable', status: 503 };
+
+  // -> { ok: true, tenantId: string | null, stale } | { ok: false, reason, status }
+  //    tenantId null = nobody owns that local id (callers deny).
+  async function tenantFor(kind, localId) {
+    try {
+      const r = await resourceIndex();
+      if (!r.ok) return UNAVAILABLE;
+      return { ok: true, tenantId: ownerOf(r.index, kind, localId), stale: r.stale };
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} in tenantFor`);
+      return UNAVAILABLE;
+    }
+  }
+
+  // -> { ok: true, ids: string[], stale } | { ok: false, reason, status }   (ids sorted; [] when none)
+  async function resourcesFor(tenantId, kind) {
+    try {
+      const r = await resourceIndex();
+      if (!r.ok) return UNAVAILABLE;
+      return { ok: true, ids: idsOf(r.index, tenantId, kind), stale: r.stale };
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} in resourcesFor`);
+      return UNAVAILABLE;
+    }
+  }
+
+  // "Is the object I am about to touch in the tenant this request was decided for?" Run AFTER a
+  // successful authorize(): `decision` is its result. Deny by default: an unowned object is
+  // resource_not_owned, a different tenant is tenant_mismatch, an unreadable registry is a 503.
+  async function authorizeResourceInTenant({ decision, kind, localId } = {}) {
+    let res;
+    try {
+      if (!decision || decision.allow !== true || !decision.tenantId) {
+        res = result({ allow: false, reason: 'tenant_mismatch', principal: decision?.principal ?? null }); // no decision to compare against: refuse, never assume
+      } else {
+        const lk = await tenantFor(kind, localId);
+        if (!lk.ok) res = result({ allow: false, reason: 'platform_unavailable', principal: decision.principal });
+        else if (lk.tenantId === null) res = result({ allow: false, reason: 'resource_not_owned', principal: decision.principal, tenantId: decision.tenantId });
+        else if (String(lk.tenantId).toLowerCase() !== String(decision.tenantId).toLowerCase()) res = result({ allow: false, reason: 'tenant_mismatch', principal: decision.principal, tenantId: decision.tenantId });
+        else res = result({ allow: true, reason: 'allowed', principal: decision.principal, tenantId: decision.tenantId, viaTenant: decision.viaTenant, roles: decision.roles, source: 'offline', stale: lk.stale, tenantSource: 'resource' });
+      }
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} while checking a resource`);
+      res = result({ allow: false, reason: 'platform_unavailable' });
+    }
+    return audited(res, 'resource_in_tenant', undefined);
   }
 
   // ---- effective permissions (platform C0b2) -------------------------------------
@@ -429,6 +508,7 @@ function createAuth(opts = {}) {
   const core = {
     config: cfg, client, cache, clerk, serviceKeys,
     authorize, authorizeApprover, resolvePrincipal, effectivePermissions, authorizeServiceCaller, assertTenant, usageContext,
+    tenantFor, resourcesFor, authorizeResourceInTenant,
     start() { cache?.startPolling(); return core; },
     close() { cache?.stop(); },
   };
