@@ -44,7 +44,34 @@ function expressAdapter(core) {
     }
   }
 
+  // Log mode (CR-L2): the real decision runs, but the request is NEVER held or failed for it. Waits at most
+  // shadowWaitMs (so a quick decision still fills req.auth for the handler), then proceeds; a decision that is
+  // slow, throws or times out is recorded as a would-deny `timeout`, and the request goes through.
+  function shadowPermission(permission, scope) {
+    return async (req, res, next) => {
+      let out = null;
+      try {
+        const resource = await resolveScope(scope, req);
+        const hint = req.headers['x-tenant'];
+        if (hint && !String(hint).includes(',')) resource.tenantHint = String(hint);
+        out = await core.shadow({ headers: req.headers, permission, resource, req, requestId: cleanRunId(req.headers['x-run-id']) });
+      } catch (err) {
+        cfg.logger.error(`auth shadow: unexpected ${err?.name || 'error'}`);
+      }
+      const d = out?.decision;
+      if (d?.allow) {
+        req.principal = d.principal;
+        req.authDecision = d;
+        req.auth = legacyAuth(d.principal, d);
+      } else {
+        cfg.logger.info?.(`[auth:log] would deny ${req.method} ${req.path}: ${d?.reason ?? 'error'}`);
+      }
+      return next();
+    };
+  }
+
   return {
+    shadowPermission,
     requirePermission: (permission, scope) => (req, res, next) => run(req, res, next, permission, scope),
     // requireApprover('social:approve', { stepUp: true, tenant: ... }) -- the
     // CR's object form requireApprover({ permission, stepUp, ...scope }) works too.

@@ -2,6 +2,47 @@
 
 Semantic versioning. v1 exports are never removed in a minor release; they are deprecated first, with a notice and a documented removal condition.
 
+## 0.3.2 — a stuck Clerk key fetch can no longer hang requests (CR-L2) — `v0.3.2-rc1`
+
+**Severity: High (availability). Recommended minimum for every v2 consumer: `v0.3.2-rc1`. The security minimum for the Python v1 entry points stays `v0.3.1-rc1` (CR-L1); `v0.3.2-rc1` includes it.**
+
+### What happened
+On 2026-10-09 the docs service (Node, vendored 0.3.0-rc3) stopped answering every request that carried a Clerk sign-in: all of them waited on the one shared refresh of Clerk's signing keys, which never finished and never logged; `/health` stayed ok.
+
+### Root cause (evidence, not a guess)
+- The old verifier shared one in-flight promise between every request and relied ONLY on `fetch`'s own `AbortSignal.timeout(5000)` to end it. Nothing independent bounded the shared promise, nobody logged a hang, and no health signal existed. If the client (or the runtime under it) fails to settle, **the slot is occupied forever**: reproduced with a client that ignores the abort signal (`test/jwks-stall.test.js`, mode `client-ignores-abort`): the old code never answers and never recovers.
+- Not reproduced on Node 20.20.2 and 22.22.2: with the real global `fetch` and `AbortSignal.timeout`, a silent server, headers-then-stall, a trickling body, a TLS handshake that never completes, a reused half-dead keep-alive socket and DNS that never answers all settle at 5.0 s (even under forced GC). So the exact trigger inside the docs container is **not proven**; it needs the container's Node patch version (`node -v`) and whether anything wraps `fetch`. What the library controls is the missing hard bound, and that is what is fixed. With the real fetch each waiting request previously held for the full ~5 s (measured 4.98 s) instead of a short budget.
+- **Python root cause, proven:** httpx's `timeout=` is per phase and per read, so a server that sends one byte at a time is never late and `await client.get(url, timeout=1)` never returns (`test_httpx_per_read_timeout_alone_does_not_end_a_trickling_body`).
+
+### Fixed (Node `v2/clerk.js` and Python `v2/clerk.py`)
+- A hard deadline (5 s, `jwksTimeouts.refreshDeadlineMs`) around the WHOLE refresh (connect, headers, body, JSON parse). A timer, not the client, settles it; the request is also aborted/cancelled. A client that ignores abort/cancel cannot hold the slot.
+- The single-flight slot cannot wedge: the shared promise always settles by the deadline; the slot is cleared; the 10 s back-off applies; the next request starts a fresh attempt; a slot found older than its deadline is replaced and counted (`wedgeRecoveries`).
+- A request waiting for a refresh has its own budget (3 s, `waitBudgetMs`), then gets `clerk_jwks_unavailable` (503 + Retry-After), never an unbounded wait.
+- Cached good keys keep serving while a refresh is slow or failing (stale-while-revalidate), until a hard expiry (1 h, `hardExpiryMs`), then fail closed.
+- Loud: every refresh failure, deadline hit and wedge recovery is logged at most once a minute per kind with counters. **New status accessor**: `auth.clerkStatus()` (Python `auth.clerk_status()`, v1 `konstant_studio_auth.clerk_status()`) returns `{configured, degraded, reason, lastSuccessAt, lastFailureAt, lastFailure, lastSuccessAgeMs, inflightAgeMs, failures, deadlineHits, wedgeRecoveries, refreshes}`; `degraded` when the in-flight refresh is older than the deadline, the last success is older than twice the refresh interval, or keys never loaded and refreshes fail. Put it in `/health`.
+- Decisions are bounded: `authorize`/`authorizeApprover` (Python `authorize`/`authorize_approver`) never run longer than `decisionDeadlineMs` (8 s); a timeout is a `503` with reason `timeout`.
+- **Log mode never delays a request**: new `auth.express.shadowPermission(permission, scope)` (FastAPI `auth.fastapi.shadow_permission(...)`, core `auth.shadow(...)`) runs the real decision but waits at most `shadowWaitMs` (1.5 s); a slow, failing or timed-out decision is recorded as a would-deny `timeout` and the request goes through. Enforce mode uses `requirePermission`, which answers `503` on timeout.
+- New options (all optional): `decisionDeadlineMs`, `shadowWaitMs`, `jwksTimeouts: {refreshDeadlineMs, waitBudgetMs, hardExpiryMs}` (Python: `decision_deadline_ms`, `shadow_wait_ms`, `jwks_timeouts`).
+
+### Stall-mode table (every row: the waiting request answers `clerk_jwks_unavailable` within its budget, the slot clears, the back-off applies, the next attempt recovers)
+| Mode | Node | Python |
+|---|---|---|
+| server accepts and never answers | pass | pass |
+| headers sent, body stalls | pass | pass |
+| body trickles one byte at a time | pass | pass |
+| TLS handshake never completes | pass | pass |
+| DNS never resolves | pass | n/a (httpx resolves in the same awaited connect; covered by the overall deadline) |
+| reused keep-alive socket goes silent | pass | pass |
+| client ignores abort / cancellation | pass | pass |
+Also: 80 concurrent requests during a stall all answer within the budget with ONE refresh; a stall while cached keys are valid does not interrupt service and fails closed past the hard expiry; log mode never holds a request; enforce is a bounded 503. Mutation-tested once: with both deadlines removed the stall suites hang or fail in both languages.
+
+### Migration (consumers)
+1. Bump to `v0.3.2-rc1` (never `@main`).
+2. Add the status accessor to `/health`: `degraded = auth.clerkStatus().degraded` (a degraded Clerk refresh should turn the health check red, not just a log line).
+3. Add a self-check that times a dummy-token request through the real middleware (it must answer 401/503 in well under the deadline; alert if it does not).
+4. In `AUTH_MODE=log`, replace the awaited decision by `shadowPermission` (Express) / `shadow_permission` (FastAPI), or call `auth.shadow(...)`.
+5. Nothing else changes; defaults need no configuration.
+
 ## 0.3.1 — SECURITY: Python v1 Clerk verification pinned to configuration (CR-L1) — `v0.3.1-rc1`
 
 **Severity: Critical (authentication bypass + server-side request forgery). Minimum safe version: `v0.3.1-rc1`. Do not use any earlier tag with the Python v1 entry points.**

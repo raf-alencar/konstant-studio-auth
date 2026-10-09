@@ -64,7 +64,7 @@ function createAuth(opts = {}) {
   const serviceKeys = new ServiceKeyResolver({
     client, accepted: cfg.acceptedCallerServices, now: cfg.now, monotonic: cfg.monotonic, logger: cfg.logger, ...cfg.serviceKeyCache,
   });
-  const clerk = new ClerkVerifier(cfg.clerk, { fetch: cfg.fetch, now: cfg.now, monotonic: cfg.monotonic, logger: cfg.logger });
+  const clerk = new ClerkVerifier(cfg.clerk, { fetch: cfg.fetch, now: cfg.now, monotonic: cfg.monotonic, logger: cfg.logger, timeouts: cfg.jwksTimeouts });
   const cache = cfg.service
     ? new SnapshotCache({
         client, service: cfg.service, ttlSeconds: cfg.snapshot.ttlSeconds,
@@ -361,8 +361,23 @@ function createAuth(opts = {}) {
     }
   }
 
+  // CR-L2: a decision that does not finish in time is a 503 `timeout`, never a request held open. The timer, not
+  // the dependencies below, settles it; the late result is discarded (and a late rejection swallowed).
+  function bounded(work, args, ms = cfg.decisionDeadlineMs) {
+    let timer;
+    const late = work.then((r) => r, () => result({ allow: false, reason: 'platform_unavailable' }));
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        cfg.logger.warn(`auth: decision exceeded ${ms} ms (timeout)`);
+        resolve(audited(result({ allow: false, reason: 'timeout' }), args.permission, args.requestId));
+      }, ms);
+      timer.unref?.();
+    });
+    return Promise.race([late, expired]).finally(() => clearTimeout(timer));
+  }
+
   async function authorize(args = {}) {
-    return audited(await decide(args), args.permission, args.requestId);
+    return bounded(decide(args).then((d) => audited(d, args.permission, args.requestId)), args);
   }
 
   // requireApprover: a human who holds the permission AND, when stepUp is set,
@@ -379,13 +394,31 @@ function createAuth(opts = {}) {
 
   async function authorizeApprover(args = {}) {
     const { stepUp = false, ...rest } = args;
-    let res = await decide(rest);
-    if (res.allow && res.principal?.kind !== 'human') {
-      res = result({ ...res, allow: false, reason: 'principal_kind_restricted' });
-    } else if (res.allow && stepUp && !checkStepUp(res)) {
-      res = result({ ...res, allow: false, reason: 'step_up_required' });
-    }
-    return audited(res, args.permission, args.requestId);
+    return bounded((async () => {
+      let res = await decide(rest);
+      if (res.allow && res.principal?.kind !== 'human') {
+        res = result({ ...res, allow: false, reason: 'principal_kind_restricted' });
+      } else if (res.allow && stepUp && !checkStepUp(res)) {
+        res = result({ ...res, allow: false, reason: 'step_up_required' });
+      }
+      return audited(res, args.permission, args.requestId);
+    })(), args);
+  }
+
+  // Log mode (CR-L2): run the real decision but NEVER hold or fail the request for it. Resolves within `ms` with
+  // { decision, pending }: `decision` is the result when it finished in time, or a would-deny `timeout`; the late
+  // result still lands in the audit event. Never rejects.
+  async function shadow(args = {}, ms = cfg.shadowWaitMs) {
+    const real = authorize(args).catch(() => result({ allow: false, reason: 'platform_unavailable' }));
+    let timer;
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+      timer.unref?.();
+    });
+    const decision = await Promise.race([real, expired]);
+    clearTimeout(timer);
+    if (decision) return { decision, pending: false };
+    return { decision: result({ allow: false, reason: 'timeout' }), pending: true };
   }
 
   // A request-supplied tenant id must be the tenant the decision was made in.
@@ -551,7 +584,7 @@ function createAuth(opts = {}) {
 
   const core = {
     config: cfg, client, cache, clerk, serviceKeys,
-    authorize, authorizeApprover, resolvePrincipal, effectivePermissions, authorizeServiceCaller, assertTenant, usageContext,
+    authorize, authorizeApprover, shadow, clerkStatus: () => clerk.status(), resolvePrincipal, effectivePermissions, authorizeServiceCaller, assertTenant, usageContext,
     tenantFor, resourcesFor, authorizeResourceInTenant,
     start() { cache?.startPolling(); return core; },
     close() { cache?.stop(); },

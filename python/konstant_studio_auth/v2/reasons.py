@@ -21,6 +21,7 @@ UNAVAILABLE = frozenset({
     "clerk_not_configured",
     "clerk_misconfigured",
     "clerk_jwks_unavailable",
+    "timeout",  # a decision did not finish within its deadline (CR-L2): could not decide, retry
     "token_exchange_not_configured",
 })
 

@@ -20,7 +20,7 @@ function int(value, fallback) {
 const KNOWN_OPTIONS = new Set([
   'service', 'platformUrl', 'platformKey', 'clerk', 'snapshot', 'pollIntervalSeconds', 'requestTimeoutMs',
   'stepUpMaxAgeMinutes', 'acceptedCallerServices', 'serviceKeyCache', 'upgradeUrl', 'tenantResolver',
-  'onEvent', 'now', 'monotonic', 'fetch', 'logger', 'maxResources',
+  'onEvent', 'now', 'monotonic', 'fetch', 'logger', 'maxResources', 'decisionDeadlineMs', 'shadowWaitMs', 'jwksTimeouts',
 ]);
 
 // Numeric options are validated at startup: a zero or negative limit is a loop or an
@@ -95,6 +95,15 @@ function resolveConfig(opts = {}, env = process.env) {
     upgradeUrl: opts.upgradeUrl ?? env.AUTH_UPGRADE_URL ?? 'https://www.konstant-studio.com/dashboard',
     // Upper bound on the resource lookup index (memory stays bounded; beyond it lookups are refused).
     maxResources: positive('maxResources', opts.maxResources ?? 100000, { integer: true }),
+    // CR-L2: no decision may take longer than this (a stuck dependency becomes a 503, never a hang), and a
+    // log-mode (shadow) decision never holds a request longer than shadowWaitMs.
+    decisionDeadlineMs: positive('decisionDeadlineMs', opts.decisionDeadlineMs ?? 8000),
+    shadowWaitMs: positive('shadowWaitMs', opts.shadowWaitMs ?? 1500),
+    jwksTimeouts: {
+      ...(opts.jwksTimeouts?.refreshDeadlineMs !== undefined ? { refreshDeadlineMs: positive('jwksTimeouts.refreshDeadlineMs', opts.jwksTimeouts.refreshDeadlineMs) } : {}),
+      ...(opts.jwksTimeouts?.waitBudgetMs !== undefined ? { waitBudgetMs: positive('jwksTimeouts.waitBudgetMs', opts.jwksTimeouts.waitBudgetMs) } : {}),
+      ...(opts.jwksTimeouts?.hardExpiryMs !== undefined ? { hardExpiryMs: positive('jwksTimeouts.hardExpiryMs', opts.jwksTimeouts.hardExpiryMs) } : {}),
+    },
     tenantResolver: opts.tenantResolver ?? null,
     onEvent: opts.onEvent ?? null,
     // Wall clock: token expiry, entitlement windows, membership expiry. Monotonic clock: how old a

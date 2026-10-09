@@ -100,6 +100,14 @@ def require_clerk_config() -> None:
         raise ConfigError("CLERK_ISSUER (and CLERK_AUTHORIZED_PARTIES) must be set to verify Clerk tokens")
 
 
+def clerk_status() -> dict:
+    """For an app's /health (CR-L2): the state of the Clerk key refresh. `degraded` is true when a refresh is stuck
+    past its deadline or the keys are stale; times and counters only, no key or token."""
+    if _clerk_verifier is None:
+        return {"configured": False, "degraded": False, "reason": None}
+    return _clerk_verifier[1].status()
+
+
 def _get_clerk_verifier():
     global _clerk_verifier
     from .v2.clerk import ClerkVerifier

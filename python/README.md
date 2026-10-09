@@ -7,6 +7,8 @@ This package is **dependencies only** — no FastAPI app, no server. Services in
 > **SECURITY — minimum safe version: `v0.3.1-rc1` (0.3.1). Severity: Critical (CR-L1).**
 > Every version up to and including 0.3.0 (`v0.2.0-rc1`, `v0.3.0-rc1`..`rc3`) is **vulnerable** in the Python v1 entry points (`clerk_protect`, `superadmin_only`, `protect_or_m2m`, `require_service`): they trusted the token's own `iss` claim, fetched the key set from that URL, and read `superadmin` from the same token, so anyone could forge a superadmin token and make the server fetch an attacker-chosen URL. Upgrade, set `CLERK_ISSUER` and `CLERK_AUTHORIZED_PARTIES`, and pin the tag (never `@main`). The Node package and the v2 verifiers in both languages are not affected; see [CHANGELOG.md](../CHANGELOG.md) and [docs/MIGRATION.md](../docs/MIGRATION.md).
 
+> **Availability: recommended minimum `v0.3.2-rc1` (0.3.2), severity High (CR-L2).** A stalled Clerk key fetch can hang every Clerk-signed request on earlier versions. See [CHANGELOG.md](../CHANGELOG.md). Add `auth.clerk_status()` (v1: `konstant_studio_auth.clerk_status()`) to `/health`.
+
 ## Install
 
 In each FastAPI service's `pyproject.toml` (or `requirements.txt`):

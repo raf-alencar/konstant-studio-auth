@@ -1,6 +1,6 @@
 [project]
 name = "konstant-studio-auth"
-version = "0.3.1"
+version = "0.3.2"
 description = "Shared Clerk + Cloudflare Access auth dependencies for FastAPI services."
 readme = "README.md"
 requires-python = ">=3.10"

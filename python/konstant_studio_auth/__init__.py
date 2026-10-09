@@ -7,6 +7,7 @@ Mirrors the Node package contract in this repo's root `index.js` and
 from .auth import (
     AuthState,
     clerk_protect,
+    clerk_status,
     get_brand_id,
     m2m_auth,
     protect_or_m2m,
@@ -20,6 +21,7 @@ from .webhooks import router as webhooks_router
 __all__ = [
     "AuthState",
     "clerk_protect",
+    "clerk_status",
     "get_brand_id",
     "m2m_auth",
     "protect_or_m2m",
@@ -30,4 +32,4 @@ __all__ = [
     "on_webhook_event",
 ]
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

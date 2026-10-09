@@ -70,6 +70,35 @@ def fastapi_adapter(core):
         request.state.auth = legacy_auth(d.principal, d)
         return d
 
+    def shadow_permission(permission, tenant=None, brand=None, domain=None, mailbox=None, tenant_of=None):
+        """Log mode (CR-L2): the real decision runs, but the request is NEVER held or failed for it. Waits at most
+        shadow_wait_ms (so a quick decision still fills request.state for the handler), then proceeds; a slow, failing
+        or timed-out decision is recorded as a would-deny and the request goes through."""
+        scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox, "tenant_of": tenant_of}
+
+        async def dependency(request: Request):
+            d = None
+            try:
+                resource = await resolve_scope(scope, request)
+                hints = _header_list(request, "x-tenant")
+                if len(hints) == 1 and hints[0] and "," not in hints[0]:
+                    resource["tenant_hint"] = hints[0]
+                d, _pending = await core.shadow(
+                    headers=request.headers, permission=permission, resource=resource, request=request,
+                    request_id=clean_run_id(request.headers.get("x-run-id")),
+                )
+            except Exception as err:  # noqa: BLE001
+                cfg.logger.error(f"auth shadow: unexpected {type(err).__name__}")
+            if d is not None and d.allow:
+                request.state.principal = d.principal
+                request.state.auth_decision = d
+                request.state.auth = legacy_auth(d.principal, d)
+            else:
+                cfg.logger.info(f"[auth:log] would deny {request.method} {request.url.path}: {getattr(d, 'reason', 'error')}")
+            return d
+
+        return dependency
+
     def require_permission(permission, tenant=None, brand=None, domain=None, mailbox=None, tenant_of=None):
         scope = {"tenant": tenant, "brand": brand, "domain": domain, "mailbox": mailbox, "tenant_of": tenant_of}
 
@@ -159,6 +188,7 @@ def fastapi_adapter(core):
 
     a = _Adapter()
     a.require_permission = require_permission
+    a.shadow_permission = shadow_permission
     a.require_approver = require_approver
     a.require_service_caller = require_service_caller
     a.require_resource_in_tenant = require_resource_in_tenant

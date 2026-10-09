@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from .clerk import ClerkVerifier, Denied
+from .clerk import ClerkVerifier, Denied, within
 from .config import resolve_config
 from .credentials import extract
 from .decision import decide_offline, scope_allows
@@ -173,7 +173,7 @@ class Auth:
             negative_max_entries=cfg.service_key_cache.negative_max_entries,
             max_inflight=cfg.service_key_cache.max_inflight,
         )
-        self.clerk = ClerkVerifier(cfg.clerk, self.http, cfg.now, cfg.logger, monotonic=cfg.monotonic)
+        self.clerk = ClerkVerifier(cfg.clerk, self.http, cfg.now, cfg.logger, monotonic=cfg.monotonic, timeouts=cfg.jwks_timeouts)
         self.cache = (
             SnapshotCache(
                 self.client, cfg.service, cfg.snapshot.ttl_seconds, cfg.snapshot.stale_read_ttl_seconds,
@@ -488,9 +488,47 @@ class Auth:
             cfg.logger.error(f"auth: unexpected {type(err).__name__} while deciding")
             return Result(False, "platform_unavailable")
 
+    async def _bounded(self, work, permission, request_id, ms=None):
+        """CR-L2: a decision that does not finish in time is a 503 `timeout`, never a request held open. The timer, not
+        the dependencies below, settles it; the unfinished work is cancelled."""
+        ms = self.config.decision_deadline_ms if ms is None else ms
+        try:
+            return await within(work, ms / 1000)
+        except asyncio.TimeoutError:
+            self.config.logger.warning(f"auth: decision exceeded {ms} ms (timeout)")
+            return self._audited(Result(False, "timeout"), permission, request_id)
+
     async def authorize(self, headers=None, credential=None, permission=None, resource=None, request=None, request_id=None):
-        res = await self._decide(headers=headers, credential=credential, permission=permission, resource=resource, request=request)
-        return self._audited(res, permission, request_id)
+        async def work():
+            res = await self._decide(headers=headers, credential=credential, permission=permission, resource=resource, request=request)
+            return self._audited(res, permission, request_id)
+        return await self._bounded(work(), permission, request_id)
+
+    async def shadow(self, wait_ms=None, **kwargs):
+        """Log mode (CR-L2): run the real decision but NEVER hold or fail the request for it. Returns
+        (decision, pending) within wait_ms: the decision when it finished in time, else a would-deny `timeout`
+        (the unfinished decision keeps running, bounded by its own deadline, and still lands in the audit event).
+        Never raises."""
+        wait_ms = self.config.shadow_wait_ms if wait_ms is None else wait_ms
+        task = asyncio.ensure_future(self.authorize(**kwargs))
+
+        def _swallow(tk):
+            if not tk.cancelled():
+                tk.exception()
+
+        task.add_done_callback(_swallow)
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), wait_ms / 1000), False
+        except asyncio.TimeoutError:
+            return Result(False, "timeout"), True
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            return Result(False, "platform_unavailable"), False
+
+    def clerk_status(self):
+        """For an app's /health: degraded when the Clerk key refresh is wedged or stale."""
+        return self.clerk.status()
 
     def _check_step_up(self, res):
         """Clerk session tokens carry `fva` (minutes since [first, second] factor, -1 when none);
@@ -509,12 +547,14 @@ class Auth:
                                  resource=None, request=None, request_id=None):
         """requireApprover: a human who holds the permission AND, when step_up is set, has a recent
         second-factor verification."""
-        res = await self._decide(headers=headers, credential=credential, permission=permission, resource=resource, request=request)
-        if res.allow and (not res.principal or res.principal.kind != "human"):
-            res = res.evolve(allow=False, reason="principal_kind_restricted")
-        elif res.allow and step_up and not self._check_step_up(res):
-            res = res.evolve(allow=False, reason="step_up_required")
-        return self._audited(res, permission, request_id)
+        async def work():
+            res = await self._decide(headers=headers, credential=credential, permission=permission, resource=resource, request=request)
+            if res.allow and (not res.principal or res.principal.kind != "human"):
+                res = res.evolve(allow=False, reason="principal_kind_restricted")
+            elif res.allow and step_up and not self._check_step_up(res):
+                res = res.evolve(allow=False, reason="step_up_required")
+            return self._audited(res, permission, request_id)
+        return await self._bounded(work(), permission, request_id)
 
     async def effective_permissions(self, **kwargs):
         try:

@@ -35,7 +35,7 @@ def _first(*values):
 _KNOWN_OPTIONS = {
     "service", "platform_url", "platform_key", "clerk", "snapshot", "poll_interval_seconds", "request_timeout_ms",
     "step_up_max_age_minutes", "accepted_caller_services", "service_key_cache", "upgrade_url", "tenant_resolver",
-    "on_event", "now", "monotonic", "logger", "max_resources",
+    "on_event", "now", "monotonic", "logger", "max_resources", "decision_deadline_ms", "shadow_wait_ms", "jwks_timeouts",
 }
 
 
@@ -145,6 +145,12 @@ def resolve_config(opts=None, env=None):
         ),
         # Upper bound on the resource lookup index (memory stays bounded; beyond it lookups are refused).
         max_resources=_positive("max_resources", _first(opts.get("max_resources"), 100000), integer=True),
+        # CR-L2: no decision may take longer than this (a stuck dependency becomes a 503, never a hang), and a
+        # log-mode (shadow) decision never holds a request longer than shadow_wait_ms.
+        decision_deadline_ms=_positive("decision_deadline_ms", _first(opts.get("decision_deadline_ms"), 8000)),
+        shadow_wait_ms=_positive("shadow_wait_ms", _first(opts.get("shadow_wait_ms"), 1500)),
+        jwks_timeouts={k: _positive(f"jwks_timeouts.{k}", v) for k, v in (opts.get("jwks_timeouts") or {}).items()
+                       if k in ("refresh_deadline_ms", "wait_budget_ms", "hard_expiry_ms")},
         tenant_resolver=opts.get("tenant_resolver"),
         on_event=opts.get("on_event"),
         # Wall clock: token expiry, entitlement windows, membership expiry. Monotonic clock: how old a
