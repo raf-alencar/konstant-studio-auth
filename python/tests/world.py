@@ -180,7 +180,7 @@ def mint_clerk_token(keys, sub, now_ms, issuer, azp, spec=None):
     """spec fields (all optional): exp_in_s, iat_in_s, nbf_in_s, extra (more claims, e.g. fva), azp (None = omit), iss, aud, kid, alg, sign_with"""
     spec = spec or {}
     iat = now_ms // 1000
-    claims = {"sub": sub, "iat": iat + spec.get("iat_in_s", 0), "exp": iat + spec.get("exp_in_s", 3600), "iss": spec.get("iss") or issuer}
+    claims = {"sub": sub, "iat": iat + spec.get("iat_in_s", 0), "exp": iat + spec.get("exp_in_s", 3600), "iss": spec["iss"] if "iss" in spec else issuer}
     if "nbf_in_s" in spec:
         claims["nbf"] = iat + spec["nbf_in_s"]
     claims.update(spec.get("extra") or {})

@@ -7,7 +7,7 @@
 // into an outage, and a forced refresh for an unknown `kid` is throttled so a
 // caller cycling kids cannot turn this into an outbound-request cannon.
 
-const { decodeProtectedHeader, importJWK, jwtVerify, errors } = require('jose');
+const { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify, errors } = require('jose');
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FORCE_MIN_INTERVAL_MS = 60 * 1000;
@@ -83,6 +83,18 @@ class ClerkVerifier {
       throw new Denied('token_invalid');
     }
     if (header.alg !== 'RS256') throw new Denied('token_invalid');
+    // The issuer is PINNED by configuration and compared EXACTLY (no normalisation: a trailing slash, another
+    // scheme, case, a port, a sub- or parent-domain, userinfo or surrounding whitespace is a different
+    // issuer). The token's own `iss` is only ever compared with it, never used to decide where to fetch keys,
+    // and a mismatch is refused here, BEFORE any network call: a forged token costs no request, not even to
+    // the legitimate key server. (Signature and issuer are verified again below.)
+    let claimed;
+    try {
+      claimed = decodeJwt(token).iss;
+    } catch {
+      throw new Denied('token_invalid');
+    }
+    if (typeof claimed !== 'string' || claimed !== this.cfg.issuer) throw new Denied('token_invalid');
 
     let jwk = (await this._jwks()).find((k) => k.kid === header.kid);
     if (!jwk) jwk = (await this._jwks(true)).find((k) => k.kid === header.kid); // key rotation: one throttled refresh

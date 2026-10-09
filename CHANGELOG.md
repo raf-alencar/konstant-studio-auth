@@ -2,6 +2,30 @@
 
 Semantic versioning. v1 exports are never removed in a minor release; they are deprecated first, with a notice and a documented removal condition.
 
+## 0.3.1 — SECURITY: Python v1 Clerk verification pinned to configuration (CR-L1) — `v0.3.1-rc1`
+
+**Severity: Critical (authentication bypass + server-side request forgery). Minimum safe version: `v0.3.1-rc1`. Do not use any earlier tag with the Python v1 entry points.**
+
+### The vulnerability (all versions up to 0.3.0: `v0.2.0-rc1`, `v0.3.0-rc1`..`rc3`)
+The Python v1 verifier behind `clerk_protect`, `superadmin_only`, `protect_or_m2m` (and `require_service`, which uses it) took the issuer from the token's own unverified `iss`, fetched `{iss}/.well-known/jwks.json`, verified the token against that key set (audience off, no `azp` check), cached keys per attacker-chosen issuer, and read `superadmin` from the same token. An attacker could sign a token with their own key, name their own server as the issuer, claim `superadmin`, and be accepted; the server also fetched any URL the token named. A key-fetch error was an unhandled 500. **Not affected:** the Node package (`setupClerk`/`protect`/`superadminOnly` use `@clerk/express`, which loads keys from the configured instance and never from `iss`; verified empirically, `test/clerk-v1-audit.test.js`) and the v2 verifiers in both languages.
+
+### Fixed
+- Python v1 now delegates to the pinned v2 verifier: issuer, key-set URL, authorized parties (`azp`, mandatory) and audience come from `CLERK_ISSUER`, `CLERK_JWKS_URL`, `CLERK_AUTHORIZED_PARTIES`, `CLERK_AUDIENCE`, never from a token. The old `_get_jwks` / `_JWKS_CACHE` are deleted.
+- Both v2 verifiers (Python and Node) compare the token's `iss` to the pinned issuer exactly **before any network call**: a forged token costs no request at all, not even to the legitimate key server.
+- Failures are documented, never a 500: `401 Invalid token`; `503 Authentication is not configured` (loud, logged once; `require_clerk_config()` fails fast at start-up); `503 Authentication service temporarily unavailable` + `Retry-After: 10` when the key server is down. One cached key set (5 min TTL), a single in-flight fetch, a 10 s back-off, no redirects followed.
+- `superadmin` only ever comes from a verified token of the pinned issuer.
+- Node: `setupClerk()` passes `CLERK_AUTHORIZED_PARTIES` to Clerk when set (opt-in, behaviour unchanged when unset).
+- Config: `CLERK_ISSUER` / `CLERK_JWKS_URL` must be http(s) URLs.
+
+### Compatibility (what breaks, and how each caller migrates)
+- **Python v1 callers must configure**: set `CLERK_ISSUER` and `CLERK_AUTHORIZED_PARTIES` (frontend origins; the same value the Clerk token's `azp` carries) and call `require_clerk_config()` at start-up. Without them Clerk tokens get `503` (previously they were trusted blindly). Tokens without `azp` are now refused. `X-API-Key` / `INTERNAL_API_KEY` paths are unchanged.
+- No API change: `clerk_protect`, `superadmin_only`, `protect_or_m2m`, `require_service`, `AuthState` keep their signatures. `import konstant_studio_auth` still does not load v2 until a Clerk token is verified.
+- Callers that wrote their own hotfix (e.g. checking `iss` before calling `clerk_protect`) can drop it after upgrading.
+
+### Tests
+- `python/tests/test_clerk_v1_security.py` (39): real local key servers that record requests. Forged issuer / internal address / `jku`,`x5u`,`jwk` headers: zero requests; 13 look-alike issuers (trailing slash, scheme, sub/parent domain, userinfo, case, port, path, whitespace, newline, prefix, empty) refused even when signed by the trusted key; missing/wrong/empty/non-string `azp`; superadmin from a foreign issuer refused on all three entry points; outage (500, garbage, unreachable, redirect) is `503` and is not hammered; recovery; not-configured is loud; unsigned, expired and HS256 tokens refused. Mutation-tested once: disabling both issuer checks fails 22 of the 39.
+- 11 shared look-alike-issuer vectors (both languages), and `test/clerk-v1-audit.test.js` for Node.
+
 ## 0.3.0 — resource lookups (C0c2)
 
 ### CoS verdict 4 fixes (rc3)

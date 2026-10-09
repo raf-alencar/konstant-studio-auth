@@ -20,8 +20,6 @@ from typing import Optional, Set
 import httpx
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
-from jose.exceptions import JWTError
 
 logger = logging.getLogger(__name__)
 
@@ -57,50 +55,106 @@ class AuthState:
     is_superadmin: bool
 
 
-_JWKS_CACHE: dict[str, dict] = {}
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def _get_jwks(issuer: str) -> dict:
-    cached = _JWKS_CACHE.get(issuer)
-    if cached is not None:
-        return cached
-    url = f"{issuer.rstrip('/')}/.well-known/jwks.json"
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        jwks = resp.json()
-    _JWKS_CACHE[issuer] = jwks
-    return jwks
+# ---------------------------------------------------------------------------
+# Clerk session-token verification (v1 entry points: clerk_protect, protect_or_m2m, superadmin_only).
+#
+# SECURITY (CR-L1, fixed in 0.3.1): versions <= 0.3.0 took the issuer from the token's OWN `iss` claim, fetched
+# the key set from that URL, verified the token with it, and read `superadmin` from the same token: anyone could
+# host a key set, sign a token and be authenticated as any user (or a superadmin), and the server would GET a
+# path on any URL the token named. That code is gone. Verification is now the pinned v2 verifier:
+#   * the issuer, the key-set URL, the authorized `azp` origins (and optionally the audience) come from
+#     CONFIGURATION (CLERK_ISSUER, CLERK_JWKS_URL, CLERK_AUTHORIZED_PARTIES, CLERK_AUDIENCE), never from a token;
+#   * a token whose `iss` is not exactly the configured issuer is refused BEFORE any network call;
+#   * `azp` is mandatory and must be listed; RS256 only; exp / iat / sub required;
+#   * the key set is fetched only from the configured URL, never following a redirect, cached (5 min), fetched by
+#     one request at a time, with a back-off after a failure;
+#   * `is_superadmin` therefore comes only from a token the configured issuer signed.
+# Not configured (or misconfigured) is a loud refusal, never "trust whatever the token says".
+# Failures: 401 for a token that is not valid; 503 for "cannot verify right now" (not configured, key server
+# unreachable); never an unhandled 500.
+# ---------------------------------------------------------------------------
+
+_clerk_verifier = None  # (settings key, verifier): one slot; rebuilt if the configuration changes
+_logged_clerk_problem: set[str] = set()
+
+
+class _FreshClient:
+    """The tiny HTTP surface the verifier needs. A new client per fetch (a fetch happens at most every few minutes), so
+    nothing is bound to one event loop or left open."""
+
+    async def get(self, url, **kwargs):
+        async with httpx.AsyncClient() as client:
+            return await client.get(url, **kwargs)
+
+
+def require_clerk_config() -> None:
+    """Call once at application start-up: raises `ConfigError` (with the reason) unless Clerk verification is
+    fully configured. Without it, Clerk tokens are refused with a 503 on every request."""
+    from .v2.config import ConfigError, resolve_clerk
+
+    cfg = resolve_clerk({}, os.environ)
+    if not (cfg.issuer and cfg.jwks_url):
+        raise ConfigError("CLERK_ISSUER (and CLERK_AUTHORIZED_PARTIES) must be set to verify Clerk tokens")
+
+
+def _get_clerk_verifier():
+    global _clerk_verifier
+    from .v2.clerk import ClerkVerifier
+    from .v2.config import ConfigError, resolve_clerk
+
+    try:
+        cfg = resolve_clerk({}, os.environ)
+    except ConfigError as err:
+        _log_once("config", f"Clerk verification is misconfigured: {err}. Clerk tokens are refused (503).")
+        raise HTTPException(status_code=503, detail="Authentication is not configured") from None
+    if not (cfg.issuer and cfg.jwks_url):
+        _log_once("unset", "CLERK_ISSUER is not set: Clerk tokens cannot be verified and are refused (503). "
+                           "Set CLERK_ISSUER and CLERK_AUTHORIZED_PARTIES (see docs/MIGRATION.md, CR-L1).")
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    key = (cfg.issuer, cfg.jwks_url, tuple(cfg.authorized_parties), tuple(cfg.audience))
+    if _clerk_verifier is None or _clerk_verifier[0] != key:
+        _clerk_verifier = (key, ClerkVerifier(
+            cfg, _FreshClient(), lambda: int(time.time() * 1000), logger, monotonic=lambda: int(time.monotonic() * 1000)))
+    return _clerk_verifier[1]
+
+
+def _log_once(name: str, message: str) -> None:
+    if name not in _logged_clerk_problem:
+        _logged_clerk_problem.add(name)
+        logger.error("%s", message)
+
+
+def _reset_clerk_verifier() -> None:
+    """Test hook: forget the cached verifier and the once-only log markers."""
+    global _clerk_verifier
+    _clerk_verifier = None
+    _logged_clerk_problem.clear()
 
 
 async def _verify_clerk_jwt(token: str) -> dict:
+    """Verified claims, or HTTPException: 401 (not a valid token for the configured issuer), 503 (cannot verify now)."""
+    from .v2.clerk import Denied
+
+    verifier = _get_clerk_verifier()
     try:
-        unverified = jwt.get_unverified_claims(token)
-        headers = jwt.get_unverified_header(token)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    issuer = unverified.get("iss")
-    if not issuer:
-        raise HTTPException(status_code=401, detail="Missing issuer claim")
-
-    jwks = await _get_jwks(issuer)
-    kid = headers.get("kid")
-    key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
-    if key is None:
-        raise HTTPException(status_code=401, detail="JWT signing key not found")
-
-    try:
-        return jwt.decode(
-            token,
-            key,
-            algorithms=[headers.get("alg", "RS256")],
-            issuer=issuer,
-            options={"verify_aud": False},
-        )
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        return await verifier.verify(token)
+    except Denied as denied:
+        if denied.reason in ("token_invalid", "token_expired"):
+            raise HTTPException(status_code=401, detail="Invalid token") from None
+        if denied.reason == "clerk_jwks_unavailable":
+            raise HTTPException(
+                status_code=503, detail="Authentication service temporarily unavailable", headers={"Retry-After": "10"}
+            ) from None
+        _log_once(denied.reason, f"Clerk verification refused: {denied.reason}")
+        raise HTTPException(status_code=503, detail="Authentication is not configured") from None
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - whatever else goes wrong is "cannot verify", never an unhandled 500
+        logger.exception("unexpected error while verifying a Clerk token")
+        raise HTTPException(status_code=503, detail="Authentication service temporarily unavailable") from None
 
 
 def _claims_to_auth_state(claims: dict) -> AuthState:
@@ -195,8 +249,11 @@ async def protect_or_m2m(
             auth = _claims_to_auth_state(claims)
             if auth.user_id:
                 return auth
-        except HTTPException:
-            pass
+        except HTTPException as err:
+            # 401: not a valid Clerk token (fall through to the API key). 503: cannot verify right now; already
+            # logged, and the API key path below is unaffected.
+            if err.status_code == 503:
+                logger.warning("protect_or_m2m: a Clerk token could not be verified (%s)", err.detail)
 
     expected = os.getenv("INTERNAL_API_KEY")
     if x_api_key and expected and x_api_key == expected:

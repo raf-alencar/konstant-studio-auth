@@ -4,6 +4,10 @@ v2 (`@konstant-studio/auth/v2`, `konstant_studio_auth.v2`) is additive. Every v1
 
 Use this together with [ADOPTION-CHECKLIST.md](./ADOPTION-CHECKLIST.md) (the steps every adopter repeats). Nothing here edits another repo; each adopting repo gets its own change request.
 
+## 0.3.1 security release (CR-L1): Python v1 now needs Clerk configuration
+
+Minimum safe version `v0.3.1-rc1`, severity Critical (see CHANGELOG). Python v1 callers (`clerk_protect`, `superadmin_only`, `protect_or_m2m`, `require_service`) must set `CLERK_ISSUER` and `CLERK_AUTHORIZED_PARTIES` (optionally `CLERK_JWKS_URL`, `CLERK_AUDIENCE`) and call `konstant_studio_auth.require_clerk_config()` at start-up; unconfigured, Clerk tokens are answered `503`. Nothing else in the v1 API changes. Node callers need no change (set `CLERK_AUTHORIZED_PARTIES` to enable the `azp` check). A floating `@main` is not allowed in any requirements file: pin the tag or a full commit hash.
+
 ## What does not change
 
 - `setupClerk`, `protect`, `superadminOnly`, `getBrandId`, `requireLogin`, `@konstant-studio/auth/webhooks`, and the Python `clerk_protect`, `superadmin_only`, `get_brand_id`, `webhooks_router`: unchanged. Browser login still goes through Clerk; `requireLogin` still redirects HTML pages to the hosted sign-in.

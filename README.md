@@ -6,6 +6,9 @@ One login → Cloudflare Access → Clerk JWT → service trusts the JWT and sco
 
 This package is **middleware only** — it does not start a server, mount routes, or talk to a database. Services install it, wire the middleware into their own Express app, and own their own route layout.
 
+> **SECURITY — minimum safe version: `v0.3.1-rc1` (0.3.1). Severity: Critical (CR-L1).**
+> Every version up to and including 0.3.0 (`v0.2.0-rc1`, `v0.3.0-rc1`..`rc3`) is **vulnerable** in the Python v1 entry points (`clerk_protect`, `superadmin_only`, `protect_or_m2m`, `require_service`): they trusted the token's own `iss` claim, fetched the key set from that URL, and read `superadmin` from the same token, so anyone could forge a superadmin token and make the server fetch an attacker-chosen URL. Upgrade, set `CLERK_ISSUER` and `CLERK_AUTHORIZED_PARTIES`, and pin the tag (never `@main`). The Node package and the v2 verifiers in both languages are not affected; see [CHANGELOG.md](CHANGELOG.md) and [docs/MIGRATION.md](docs/MIGRATION.md).
+
 ## Install
 
 In each service's `package.json`:
@@ -13,7 +16,7 @@ In each service's `package.json`:
 ```json
 {
   "dependencies": {
-    "@konstant-studio/auth": "github:raf-alencar/konstant-studio-auth#main"
+    "@konstant-studio/auth": "github:raf-alencar/konstant-studio-auth#v0.3.1-rc1"
   }
 }
 ```

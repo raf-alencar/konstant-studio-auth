@@ -59,17 +59,11 @@ def _string_list(name, value):
     return list(value)
 
 
-def resolve_config(opts=None, env=None):
-    opts = opts or {}
-    # Unlike JS, a misspelled or removed option (e.g. the old `service_keys`) is an error, not silently ignored.
-    unknown = sorted(set(opts) - _KNOWN_OPTIONS)
-    if unknown:
-        raise ConfigError(f"unknown option(s): {', '.join(unknown)}")
+def resolve_clerk(clerk_opts=None, env=None):
+    """The Clerk verification settings, from options or the environment, validated. Used by `resolve_config`
+    and by the v1 Python verifier. Nothing here is ever read from a token."""
+    clerk_opts = clerk_opts or {}
     env = os.environ if env is None else env
-    clerk_opts = opts.get("clerk") or {}
-    snap_opts = opts.get("snapshot") or {}
-    sk = opts.get("service_key_cache") or {}
-
     issuer = _first(clerk_opts.get("issuer"), env.get("CLERK_ISSUER"), "")
     jwks_url = _first(
         clerk_opts.get("jwks_url"),
@@ -86,6 +80,24 @@ def resolve_config(opts=None, env=None):
         raise ConfigError(
             "CLERK_AUTHORIZED_PARTIES is required when Clerk verification is configured (the azp check is mandatory)"
         )
+    for name, value in (("CLERK_ISSUER", issuer), ("CLERK_JWKS_URL", jwks_url)):
+        if value and not (value.startswith("https://") or value.startswith("http://")):
+            raise ConfigError(f"{name} must be an http(s) URL (got a value that is not)")
+    return SimpleNamespace(issuer=issuer, jwks_url=jwks_url, authorized_parties=list(authorized_parties), audience=list(audience))
+
+
+def resolve_config(opts=None, env=None):
+    opts = opts or {}
+    # Unlike JS, a misspelled or removed option (e.g. the old `service_keys`) is an error, not silently ignored.
+    unknown = sorted(set(opts) - _KNOWN_OPTIONS)
+    if unknown:
+        raise ConfigError(f"unknown option(s): {', '.join(unknown)}")
+    env = os.environ if env is None else env
+    clerk_opts = opts.get("clerk") or {}
+    snap_opts = opts.get("snapshot") or {}
+    sk = opts.get("service_key_cache") or {}
+
+    clerk = resolve_clerk(clerk_opts, env)
 
     platform_url = _first(opts.get("platform_url"), env.get("PLATFORM_API_URL"), "").rstrip("/")
     # Per-service key (stgs_...). INTERNAL_API_KEY is the deprecated shared key;
@@ -98,9 +110,7 @@ def resolve_config(opts=None, env=None):
         service=_first(opts.get("service"), env.get("AUTH_SERVICE"), ""),
         platform_url=platform_url,
         platform_key=platform_key,
-        clerk=SimpleNamespace(
-            issuer=issuer, jwks_url=jwks_url, authorized_parties=list(authorized_parties), audience=list(audience)
-        ),
+        clerk=clerk,
         snapshot=SimpleNamespace(
             ttl_seconds=_positive("snapshot.ttl_seconds", _first(snap_opts.get("ttl_seconds"), _int(env.get("SNAPSHOT_TTL_SECONDS"), 30))),
             stale_read_ttl_seconds=_positive(

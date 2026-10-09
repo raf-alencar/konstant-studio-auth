@@ -19,7 +19,11 @@ const _SHARED_KEY_REMOVAL =
   "require('@konstant-studio/auth/v2'). See docs/MIGRATION.md.";
 
 function setupClerk() {
-  return clerkMiddleware();
+  // Clerk's own verifier loads keys from the configured instance (secret key / CLERK_JWT_KEY), never from the
+  // token's `iss`. When CLERK_AUTHORIZED_PARTIES is set (comma-separated frontend origins) it is passed on so a
+  // token issued to another app of the same instance is refused; unset, behaviour is unchanged.
+  const authorizedParties = (process.env.CLERK_AUTHORIZED_PARTIES || '').split(',').map((v) => v.trim()).filter(Boolean);
+  return authorizedParties.length ? clerkMiddleware({ authorizedParties }) : clerkMiddleware();
 }
 
 function protect(req, res, next) {

@@ -16,6 +16,7 @@ import konstant_studio_auth as lib
 from konstant_studio_auth import auth as legacy
 
 ISSUER = "https://clerk.legacy.test"
+AZP = "https://app.legacy.test"
 KID = "legacy-kid"
 
 
@@ -24,11 +25,18 @@ def _quiet(monkeypatch):
     monkeypatch.setenv("KSA_SILENCE_DEPRECATIONS", "1")
     monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
     monkeypatch.delenv("PLATFORM_API_URL", raising=False)
+    # v1 Clerk verification is pinned to CONFIGURATION (CR-L1): issuer and authorized parties come from the environment.
+    monkeypatch.setenv("CLERK_ISSUER", ISSUER)
+    monkeypatch.setenv("CLERK_AUTHORIZED_PARTIES", AZP)
+    monkeypatch.delenv("CLERK_JWKS_URL", raising=False)
+    monkeypatch.delenv("CLERK_AUDIENCE", raising=False)
+    original_get = legacy._FreshClient.get
     legacy._reset_entitlement_cache()
-    legacy._JWKS_CACHE.clear()
+    legacy._reset_clerk_verifier()
     yield
+    legacy._FreshClient.get = original_get  # the helper below patches the class: put it back
     legacy._reset_entitlement_cache()
-    legacy._JWKS_CACHE.clear()
+    legacy._reset_clerk_verifier()
 
 
 @pytest.fixture(scope="module")
@@ -46,9 +54,24 @@ def clerk_key():
 
 def token(clerk_key, **claims):
     pem, jwks = clerk_key
-    legacy._JWKS_CACHE[ISSUER] = jwks  # no network: the cache is the JWKS source
-    base = {"sub": "user_legacy", "iss": ISSUER, "iat": int(time.time()), "exp": int(time.time()) + 600}
+    _serve_jwks(jwks)  # no network: the configured key-set URL is answered from memory
+    base = {"sub": "user_legacy", "iss": ISSUER, "azp": AZP, "iat": int(time.time()), "exp": int(time.time()) + 600}
     return jose_jwt.encode({**base, **claims}, pem, algorithm="RS256", headers={"kid": KID})
+
+
+def _serve_jwks(jwks):
+    class _Resp:
+        is_success = True
+        status_code = 200
+
+        def json(self):
+            return jwks
+
+    async def _get(self, url, **kwargs):
+        assert url == f"{ISSUER}/.well-known/jwks.json", f"unexpected key-set URL {url}"
+        return _Resp()
+
+    legacy._FreshClient.get = _get
 
 
 def app_with(*routes):

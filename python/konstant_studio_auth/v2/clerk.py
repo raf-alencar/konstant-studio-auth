@@ -99,6 +99,17 @@ class ClerkVerifier:
             raise Denied("token_invalid") from None
         if header.get("alg") != "RS256":
             raise Denied("token_invalid")
+        # The issuer is PINNED by configuration and compared EXACTLY (no normalisation: a trailing slash, another
+        # scheme, case, a port, a sub- or parent-domain, userinfo or surrounding whitespace is a different
+        # issuer). The token's own `iss` is only ever compared with it, never used to decide where to
+        # fetch keys, and a mismatch is refused here, BEFORE any network call: a forged token costs no request,
+        # not even to the legitimate key server. (Signature and issuer are verified again below.)
+        try:
+            claimed = jwt.get_unverified_claims(token).get("iss")
+        except Exception:  # noqa: BLE001
+            raise Denied("token_invalid") from None
+        if not isinstance(claimed, str) or claimed != self.cfg.issuer:
+            raise Denied("token_invalid")
         kid = header.get("kid")
 
         def find(keys):

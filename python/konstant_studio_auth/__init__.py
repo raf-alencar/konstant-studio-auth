@@ -10,6 +10,7 @@ from .auth import (
     get_brand_id,
     m2m_auth,
     protect_or_m2m,
+    require_clerk_config,
     require_service,
     superadmin_only,
 )
@@ -22,10 +23,11 @@ __all__ = [
     "get_brand_id",
     "m2m_auth",
     "protect_or_m2m",
+    "require_clerk_config",
     "require_service",
     "superadmin_only",
     "webhooks_router",
     "on_webhook_event",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

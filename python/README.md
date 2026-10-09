@@ -4,6 +4,9 @@ FastAPI dependencies that mirror the Node middleware in this repo's root [index.
 
 This package is **dependencies only** — no FastAPI app, no server. Services install it, wire the dependencies into their own routes, and own their own DB writes.
 
+> **SECURITY — minimum safe version: `v0.3.1-rc1` (0.3.1). Severity: Critical (CR-L1).**
+> Every version up to and including 0.3.0 (`v0.2.0-rc1`, `v0.3.0-rc1`..`rc3`) is **vulnerable** in the Python v1 entry points (`clerk_protect`, `superadmin_only`, `protect_or_m2m`, `require_service`): they trusted the token's own `iss` claim, fetched the key set from that URL, and read `superadmin` from the same token, so anyone could forge a superadmin token and make the server fetch an attacker-chosen URL. Upgrade, set `CLERK_ISSUER` and `CLERK_AUTHORIZED_PARTIES`, and pin the tag (never `@main`). The Node package and the v2 verifiers in both languages are not affected; see [CHANGELOG.md](../CHANGELOG.md) and [docs/MIGRATION.md](../docs/MIGRATION.md).
+
 ## Install
 
 In each FastAPI service's `pyproject.toml` (or `requirements.txt`):
@@ -123,6 +126,8 @@ app.include_router(webhooks_router)
 ```
 
 ### `clerk_protect` — guard an API route
+
+**Configuration is required (0.3.1+).** The issuer is pinned by configuration, never read from the token: set `CLERK_ISSUER`, `CLERK_AUTHORIZED_PARTIES` (comma-separated frontend origins; `azp` is mandatory) and optionally `CLERK_JWKS_URL` (default `<issuer>/.well-known/jwks.json`) and `CLERK_AUDIENCE`. Call `require_clerk_config()` at start-up to fail fast. Unconfigured, every Clerk token gets `503 Authentication is not configured` (and one error log); a key-server outage is `503 Authentication service temporarily unavailable` with `Retry-After: 10`; a bad token is `401`. `superadmin` only counts on a token that passed all of that.
 
 ```python
 @app.get("/api/content-items")

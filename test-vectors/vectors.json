@@ -1723,6 +1723,237 @@
       }
     },
     {
+      "id": "clerk-lookalike-issuer-trailing-slash",
+      "desc": "look-alike issuer (trailing-slash): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.test/"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-scheme",
+      "desc": "look-alike issuer (scheme): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "http://clerk.vectors.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-subdomain",
+      "desc": "look-alike issuer (subdomain): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://evil.clerk.vectors.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-parent-suffix",
+      "desc": "look-alike issuer (parent-suffix): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.test.evil.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-userinfo",
+      "desc": "look-alike issuer (userinfo): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.test@evil.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-case",
+      "desc": "look-alike issuer (case): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "HTTPS://CLERK.VECTORS.TEST"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-port",
+      "desc": "look-alike issuer (port): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.test:443"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-path",
+      "desc": "look-alike issuer (path): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.test/x"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-whitespace",
+      "desc": "look-alike issuer (whitespace): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": " https://clerk.vectors.test"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-prefix",
+      "desc": "look-alike issuer (prefix): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": "https://clerk.vectors.tes"
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
+      "id": "clerk-lookalike-issuer-empty",
+      "desc": "look-alike issuer (empty): compared exactly, refused",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "iss": ""
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "token_invalid",
+        "status": 401,
+        "tenant": null,
+        "source": "none"
+      }
+    },
+    {
       "id": "clerk-wrong-signature",
       "desc": "signed by a key that is not in the JWKS",
       "who": {
