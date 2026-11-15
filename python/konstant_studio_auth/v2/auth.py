@@ -182,6 +182,7 @@ class Auth:
             if cfg.service
             else None
         )
+        self._membership_cache = {}
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -306,36 +307,59 @@ class Auth:
 
     # ---- decisions ----------------------------------------------------------
 
-    async def _select_tenant(self, explicit, hint, principal, request):
-        """Which tenant is this request about, and where did that come from? In order:
-          1. `explicit`: the route's own tenant scope. Always wins.
-          2. the adopter's tenant_resolver (app code, not client input);
-          3. a token that carries a Clerk org claim: the tenant that org maps to in the snapshot, and ONLY
-             that. No snapshot to map through, or an org that does not map, is "no tenant" (tenant_required);
-             a snapshot that cannot be read is "could not decide". The header is NEVER a fallback here, or a
-             client could move a token off its org's tenant by making the org unmappable;
-          4. `hint`: the x-tenant header, the weakest source: only for a principal with no org claim (agency,
-             superadmin, multi-tenant users) and for non-Clerk principals.
-        The mapping is identity, not authority: the decision still has to find the user's membership in
-        whatever tenant comes out. Steps 2 and 3 run only for a locally verified Clerk session.
-        -> {"tenant", "source"} | {"unavailable": True} | {"org_unmapped": True}"""
+    async def _user_memberships(self, cred, principal):
+        """Per-user cache for GET /v1/users/me/memberships. TTL is bounded so a default-tenant change at
+        the platform surfaces within one TTL without hammering the endpoint on every authorize().
+        -> dict {default_tenant_id, memberships} | None (platform could not say right now)."""
+        if cred.type != "clerk" or principal.kind != "human" or not principal.id:
+            return None
+        now = self.config.monotonic()
+        ttl_ms = int(getattr(self.config, "membership_cache_ttl_seconds", 60) * 1000)
+        if not hasattr(self, "_membership_cache"):
+            self._membership_cache = {}
+        cached = self._membership_cache.get(principal.id)
+        if cached and now - cached[0] < ttl_ms and cached[1] is not None:
+            return cached[1]
+        try:
+            data = await self.client.memberships(cred.raw)
+            self._membership_cache[principal.id] = (now, data)
+            return data
+        except PlatformUnavailable:
+            # Brief negative cache so a flaky platform does not stampede this endpoint.
+            self._membership_cache[principal.id] = (now, None)
+            return None
+
+    async def _select_tenant(self, explicit, principal, cred, request):
+        """Which tenant is this request about, and where did that come from? In order (decision 321168bc #12):
+          1. `explicit`: the route's own tenant scope. Always wins. The platform's authorize() is the final
+             gate for reachability: a principal who neither is a member of that tenant nor reaches it
+             through a grant (parent/agency over brand child, per 90fdd2fe) is denied there.
+          2. the adopter's tenant_resolver (app code), under the same rule as explicit.
+          3. the user's default_tenant_id from GET /v1/users/me/memberships (platform CR-P1). The platform
+             already drops a default that no longer points at an active membership, so an inactive default
+             is absent here and the next step runs.
+          4. exactly one active membership: use it.
+          5. TenantChoiceRequired. Adapters surface it as HTTP 409 tenant_choice_required.
+        The token's Clerk org_id claim is NEVER read. There is no `hint`: the x-tenant header is gone from
+        the selection path. Steps 2-4 run only for a locally verified Clerk session.
+        -> {"tenant", "source"} | {"unavailable": True} | {"choice_required": True}"""
         if explicit:
             return {"tenant": explicit, "source": "explicit"}  # '' is no tenant
-        if principal.source == "clerk" and principal.kind == "human":
-            if self.config.tenant_resolver:
-                t = (await _maybe_await(self.config.tenant_resolver(request, principal))) or None
-                if t:
-                    return {"tenant": t, "source": "resolver"}
-            org_id = (principal.claims or {}).get("org_id")
-            if org_id:
-                if not self.cache:
-                    return {"org_unmapped": True}  # no service configured, so no snapshot to map through
-                snap = await self.cache.get()  # a stale snapshot is fine here: it only names a tenant
-                if snap.state == "none":
-                    return {"unavailable": True}
-                mapped = next((t["id"] for t in snap.snapshot["tenants"] if t.get("org_id") == org_id), None)
-                return {"tenant": mapped, "source": "org"} if mapped else {"org_unmapped": True}
-        return {"tenant": hint, "source": "hint"} if hint else {"tenant": None, "source": None}
+        if principal.source != "clerk" or principal.kind != "human":
+            return {"tenant": None, "source": None}
+        if self.config.tenant_resolver:
+            t = (await _maybe_await(self.config.tenant_resolver(request, principal))) or None
+            if t:
+                return {"tenant": t, "source": "resolver"}
+        m = await self._user_memberships(cred, principal)
+        if not m:
+            return {"unavailable": True}
+        if m.get("default_tenant_id"):
+            return {"tenant": m["default_tenant_id"], "source": "default"}
+        rows = m.get("memberships") if isinstance(m.get("memberships"), list) else []
+        if len(rows) == 1:
+            return {"tenant": rows[0].get("tenant_id"), "source": "single_membership"}
+        return {"choice_required": True}
 
     async def _category_of(self, parsed):
         """The category (read / write / ...) of a permission of THIS service, from the cached snapshot; None when
@@ -442,20 +466,20 @@ class Auth:
                 explicit = lk["tenant_id"]
                 owner_source = "resource"
                 owner_stale = lk["stale"]
-            picked = await self._select_tenant(explicit, resource.get("tenant_hint"), principal, request)
+            picked = await self._select_tenant(explicit, principal, cred, request)
             if owner_source and picked.get("source") == "explicit":
                 picked["source"] = owner_source
             if picked.get("unavailable"):
                 return Result(False, "platform_unavailable", principal=principal)
-            if picked.get("org_unmapped"):
-                return Result(False, "tenant_required", principal=principal)
+            if picked.get("choice_required"):
+                return Result(False, "tenant_choice_required", principal=principal)
             tenant, tenant_source = picked["tenant"], picked["source"]
             # The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name
             # a tenant: answer it here as a denial instead of sending it on and reporting the platform's
             # 422 as an outage (a client mistake must not look like platform_unavailable).
             if tenant and not _UUID_RE.fullmatch(str(tenant)):
                 return Result(False, "tenant_not_found", principal=principal)
-            scoped = {k: v for k, v in resource.items() if k not in ("tenant_hint", "tenant_of")}
+            scoped = {k: v for k, v in resource.items() if k != "tenant_of"}
             scoped.update(tenant=tenant, tenant_source=tenant_source, owner_stale=owner_stale, category=category)
 
             offline_eligible = (
@@ -542,11 +566,11 @@ class Auth:
 
         if principal.kind == "service":
             return none("service_principal_not_granted")
-        picked = await self._select_tenant(tenant, None, principal, request)
+        picked = await self._select_tenant(tenant, principal, cred, request)
         if picked.get("unavailable"):
             return EffectiveResult(False, reason="platform_unavailable", status=503)
-        if picked.get("org_unmapped"):
-            return none("tenant_required")
+        if picked.get("choice_required"):
+            return none("tenant_choice_required")
         chosen = picked["tenant"]
         if chosen and not _UUID_RE.fullmatch(str(chosen)):
             return none("tenant_not_found")
@@ -681,6 +705,38 @@ class Auth:
             self.config.logger.error(f"auth: unexpected {type(err).__name__} while checking a resource")
             res = Result(False, "platform_unavailable")
         return self._audited(res, "resource_in_tenant", None)
+
+    async def tenant_audit(self, headers=None, credential=None, tenant_id=None, counts=None,
+                           caller_service=None, stale=False):
+        """One shape for every app's /internal/tenant-audit (service-key guarded). The digest caller gets
+        back {ok, service, tenant_id, counts, stale}; counts is the consumer's own object (number of
+        records per kind). The guard is the same uniform refusal as authorize_service_caller: a service
+        key, from the expected caller when `caller_service` is set."""
+        try:
+            cred = credential if credential is not None else extract(headers)
+            principal, _defer, denied = await self._principal_from(cred)
+            if denied:
+                self._audited(Result(False, denied), "tenant_audit", None)
+                return {"ok": False, "status": status_for(denied, False), "reason": denied}
+            if principal.kind != "service":
+                self._audited(Result(False, "service_caller_required", principal=principal), "tenant_audit", None)
+                return {"ok": False, "status": 401, "reason": "service_caller_required"}
+            if caller_service and principal.service != caller_service:
+                self._audited(Result(False, "route_not_allowed", principal=principal), "tenant_audit", None)
+                return {"ok": False, "status": 403, "reason": "route_not_allowed"}
+            self._audited(Result(True, "allowed", principal=principal, source="live"), "tenant_audit", None)
+            return {
+                "ok": True, "status": 200,
+                "service": self.config.service or None,
+                "tenant_id": tenant_id,
+                "counts": counts if isinstance(counts, dict) else {},
+                "stale": bool(stale),
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            self.config.logger.error(f"auth: unexpected {type(err).__name__} in tenant_audit")
+            return {"ok": False, "status": 503, "reason": "platform_unavailable"}
 
     @staticmethod
     def assert_tenant(res, tenant_id):

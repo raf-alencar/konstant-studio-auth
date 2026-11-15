@@ -72,11 +72,11 @@ test('permits(): allowed iff SOME scope entry admits the resource (the platform\
   assert.deepEqual(r.principal.permissions, ['docs:read', 'docs:write', 'mail:send']);
 });
 
-test('effective permissions that cannot be computed come back empty with the platform\'s reason', async () => {
+test('effective permissions that cannot be computed come back empty with the library\'s reason (tenant_choice_required when no tenant is named and the user has several memberships)', async () => {
   const { auth, fake, token } = await build();
-  fake.effectiveReply = () => eff([], { tenant_id: null, reason: 'tenant_required' });
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: null, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
   const r = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('bob')}` } });
-  assert.deepEqual([r.ok, r.reason, r.permissions, r.permits('docs:read', {})], [true, 'tenant_required', [], false]);
+  assert.deepEqual([r.ok, r.reason, r.permissions, r.permits('docs:read', {})], [true, 'tenant_choice_required', [], false]);
 });
 
 test('effective permissions: a service principal holds none; platform trouble is a 503, never an empty allow', async () => {
@@ -94,14 +94,15 @@ test('effective permissions: a service principal holds none; platform trouble is
   assert.deepEqual([garbage.reason], ['tenant_not_found']);
 });
 
-test('org mapping: the adopter\'s tenantResolver wins over the Clerk org claim', async () => {
-  const { auth, token } = await build({ tenantResolver: () => GLOBEX });
+test('tenant selection: the adopter\'s tenantResolver wins, regardless of what the token\'s org_id says', async () => {
+  const { auth, fake, token } = await build({ tenantResolver: () => GLOBEX });
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: ACME, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
   const d = await auth.authorize({ headers: { authorization: `Bearer ${await token('bob', { extra: { org_id: 'org_acme' } })}` }, permission: 'docs:read' });
-  assert.equal(d.tenantId, GLOBEX, 'resolver, not org_acme');
+  assert.equal(d.tenantId, GLOBEX, 'resolver, not any org_id');
   assert.equal(d.source, 'offline');
 });
 
-test('org mapping is for humans: an agent key is bound to its own tenant whatever header claims an org', async () => {
+test('key principals do not call GET /v1/users/me/memberships: tenancy comes from the key', async () => {
   const { auth, fake } = await build();
   fake.live = { allow: true, reason: 'allowed', tenant: 'acme', roles: ['operator'] };
   const d = await auth.authorize({
@@ -109,25 +110,10 @@ test('org mapping is for humans: an agent key is bound to its own tenant whateve
     permission: 'docs:read',
   });
   assert.deepEqual([d.allow, d.source], [true, 'live']);
-  assert.equal(fake.count('GET', '/v1/authorize/snapshot'), 0, 'no snapshot lookup for a key principal');
+  assert.equal(fake.count('GET', '/v1/users/me/memberships'), 0, 'not called for a key principal');
 });
 
-test('org mapping uses a stale snapshot (it only names a tenant), but never when there is none', async () => {
-  const { auth, fake, token, advance } = await build();
-  await auth.cache.get();
-  advance(120); // past the TTL, inside the stale-read window
-  fake.down = true;
-  const t = await token('bob', { extra: { org_id: 'org_acme' } });
-  const stale = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read' });
-  assert.deepEqual([stale.allow, stale.tenantId, stale.stale], [true, ACME, true]);
-
-  const cold = await build();
-  cold.fake.down = true;
-  const none = await cold.auth.authorize({ headers: { authorization: `Bearer ${await cold.token('bob', { extra: { org_id: 'org_acme' } })}` }, permission: 'docs:read' });
-  assert.deepEqual([none.allow, none.reason], [false, 'platform_unavailable']);
-});
-
-test('Clerk v1 and v2 token shapes both feed the legacy req.auth', async () => {
+test('Clerk v1 and v2 token shapes both populate claims (org_id kept for display/logs; selection ignores it)', async () => {
   const { auth, token } = await build();
   const v1 = await auth.resolvePrincipal({ headers: { authorization: `Bearer ${await token('alice', { extra: { org_id: 'org_acme', org_role: 'org:admin' } })}` } });
   const v2 = await auth.resolvePrincipal({ headers: { authorization: `Bearer ${await token('alice', { extra: { o: { id: 'org_acme', rol: 'admin' } } })}` } });

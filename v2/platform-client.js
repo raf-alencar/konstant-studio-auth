@@ -84,6 +84,14 @@ class PlatformClient {
     if (!resp.ok) throw new PlatformUnavailable(`resolve HTTP ${resp.status}`);
     return resp.json();
   }
+
+  // GET /v1/users/me/memberships (platform CR-P1): the signed-in human's memberships and default tenant.
+  // The user's Clerk session is carried in X-Acting-Token; the service key still authenticates the transport.
+  async memberships(clerkToken) {
+    const resp = await this._request('GET', '/v1/users/me/memberships', { headers: { 'X-Acting-Token': clerkToken } });
+    if (!resp.ok) throw new PlatformUnavailable(`memberships HTTP ${resp.status}`);
+    return resp.json();
+  }
 }
 
 module.exports = { PlatformClient, PlatformUnavailable, PlatformThrottled };

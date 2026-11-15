@@ -32,6 +32,8 @@ def status_for(reason, allow):
         return 401
     if reason in UNAVAILABLE:
         return 503
+    if reason == "tenant_choice_required":
+        return 409
     return 403
 
 

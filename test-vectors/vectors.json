@@ -1013,8 +1013,8 @@
       }
     },
     {
-      "id": "tenant-required",
-      "desc": "two tenants and none named: the platform decides, answer tenant_required",
+      "id": "tenant-choice-required",
+      "desc": "two active memberships and none named: the library cannot pick a tenant, answer tenant_choice_required (adapter 409)",
       "who": {
         "clerk": "bob"
       },
@@ -1023,11 +1023,13 @@
       },
       "expect": {
         "allow": false,
-        "reason": "tenant_required",
-        "status": 403,
+        "reason": "tenant_choice_required",
+        "status": 409,
         "tenant": null,
-        "source": "live"
-      }
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "tenant_choice_required is produced by the library before /v1/authorize"
     },
     {
       "id": "tenant-from-resolver",
@@ -1051,8 +1053,8 @@
       }
     },
     {
-      "id": "single-tenant-no-hint",
-      "desc": "no tenant named: the library does not guess offline, the platform picks the only one",
+      "id": "single-membership-is-used",
+      "desc": "no tenant named and exactly one active membership: the library picks it (source single_membership) and the decision goes offline",
       "who": {
         "clerk": "alice"
       },
@@ -1067,8 +1069,10 @@
         "roles": [
           "operator"
         ],
-        "source": "live"
-      }
+        "source": "offline"
+      },
+      "parity": false,
+      "parity_note": "single-membership selection is library-side"
     },
     {
       "id": "scope-brand-allowed",
@@ -2179,255 +2183,6 @@
       }
     },
     {
-      "id": "org-claim-maps-tenant",
-      "desc": "no tenant named, two memberships: the Clerk org in the session token names the tenant (snapshot org_id), so the decision is offline",
-      "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "org_id": "org_acme"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read"
-      },
-      "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "acme",
-        "roles": [
-          "viewer"
-        ],
-        "source": "offline"
-      },
-      "parity_tenant": "acme"
-    },
-    {
-      "id": "org-claim-v2-token-shape",
-      "desc": "Clerk's v2 session token carries the org as o.id",
-      "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "o": {
-              "id": "org_acme",
-              "rol": "admin"
-            }
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read"
-      },
-      "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "acme",
-        "roles": [
-          "viewer"
-        ],
-        "source": "offline"
-      },
-      "parity_tenant": "acme"
-    },
-    {
-      "id": "org-claim-other-org-is-not-widened",
-      "desc": "the claimed org is globex but this user is only a member of acme: denied, never silently moved to the tenant they do belong to",
-      "who": {
-        "clerk": "alice",
-        "token": {
-          "extra": {
-            "org_id": "org_globex"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read"
-      },
-      "expect": {
-        "allow": false,
-        "reason": "no_permission",
-        "status": 403,
-        "tenant": "globex",
-        "source": "offline"
-      },
-      "parity_tenant": "globex"
-    },
-    {
-      "id": "org-claim-explicit-tenant-wins",
-      "desc": "an explicit tenant beats the org claim",
-      "who": {
-        "clerk": "alice",
-        "token": {
-          "extra": {
-            "org_id": "org_globex"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read",
-        "tenant": "acme"
-      },
-      "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "acme",
-        "roles": [
-          "operator"
-        ],
-        "source": "offline"
-      }
-    },
-    {
-      "id": "org-claim-not-in-snapshot-is-tenant-required",
-      "desc": "the claimed org's tenant has no docs entitlement, so it is not in the snapshot: the token's org does not map, and the answer is tenant_required. The library does not guess a tenant for it (the platform, asked without a tenant, would pick the user's only one)",
-      "who": {
-        "clerk": "alice",
-        "token": {
-          "extra": {
-            "org_id": "org_dormant"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read"
-      },
-      "expect": {
-        "allow": false,
-        "reason": "tenant_required",
-        "status": 403,
-        "tenant": null,
-        "source": "none"
-      },
-      "parity": false,
-      "parity_note": "by design the library refuses to guess a tenant for a token whose org does not map; the platform would pick the user's only tenant"
-    },
-    {
-      "id": "org-claim-unknown-org-is-tenant-required",
-      "desc": "an org the platform does not know: nothing to map, tenant_required",
-      "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "org_id": "org_unknown"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read"
-      },
-      "expect": {
-        "allow": false,
-        "reason": "tenant_required",
-        "status": 403,
-        "tenant": null,
-        "source": "none"
-      }
-    },
-    {
-      "id": "org-claim-unmapped-ignores-header",
-      "desc": "R1: the org does not map and an x-tenant header names another tenant: the header is IGNORED, never a fallback",
-      "who": {
-        "clerk": "alice",
-        "token": {
-          "extra": {
-            "org_id": "org_dormant"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read",
-        "tenant_hint": "globex"
-      },
-      "expect": {
-        "allow": false,
-        "reason": "tenant_required",
-        "status": 403,
-        "tenant": null,
-        "source": "none"
-      },
-      "parity": false,
-      "parity_note": "by design the library never falls back to the header for a token whose org does not map"
-    },
-    {
-      "id": "org-claim-mapped-ignores-header",
-      "desc": "R1: the org maps to acme; a header naming globex (where this user is also a member) does not move the token",
-      "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "org_id": "org_acme"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read",
-        "tenant_hint": "globex"
-      },
-      "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "acme",
-        "roles": [
-          "viewer"
-        ],
-        "source": "offline"
-      },
-      "parity_tenant": "acme"
-    },
-    {
-      "id": "org-claim-snapshot-unavailable-ignores-header",
-      "desc": "R1: the snapshot cannot be read (cold cache, platform down), so the org cannot be mapped: could not decide, and still not the header",
-      "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "org_id": "org_acme"
-          }
-        }
-      },
-      "ask": {
-        "permission": "docs:read",
-        "tenant_hint": "globex"
-      },
-      "expect": {
-        "allow": false,
-        "reason": "platform_unavailable",
-        "status": 503,
-        "tenant": null,
-        "source": "none"
-      },
-      "platform": "down",
-      "cache_age_s": null
-    },
-    {
-      "id": "header-works-without-an-org-claim",
-      "desc": "a token with no org claim may still use the header (agency, superadmin and multi-tenant users); the decision still checks the membership",
-      "who": {
-        "clerk": "bob"
-      },
-      "ask": {
-        "permission": "docs:read",
-        "tenant_hint": "globex"
-      },
-      "expect": {
-        "allow": true,
-        "reason": "allowed",
-        "status": 200,
-        "tenant": "globex",
-        "roles": [
-          "viewer"
-        ],
-        "source": "offline"
-      },
-      "parity_tenant": "globex"
-    },
-    {
       "id": "tenant-of-owned-resource",
       "desc": "the tenant is the owner of the object about to be touched",
       "who": {
@@ -2552,19 +2307,13 @@
       }
     },
     {
-      "id": "tenant-of-beats-org-claim-and-header",
-      "desc": "the object's owner is the tenant, not the token's org and not a header",
+      "id": "tenant-of-beats-selection",
+      "desc": "the object's owner is the tenant: not a Clerk org claim (ignored) and not the removed hint",
       "who": {
-        "clerk": "bob",
-        "token": {
-          "extra": {
-            "org_id": "org_acme"
-          }
-        }
+        "clerk": "bob"
       },
       "ask": {
         "permission": "docs:read",
-        "tenant_hint": "acme",
         "tenant_of": {
           "kind": "brand",
           "local_id": "brand-g"

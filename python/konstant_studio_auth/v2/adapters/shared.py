@@ -7,7 +7,7 @@ details, no platform error text.
 import inspect
 import re
 
-BODIES = {401: "Unauthorized", 403: "Forbidden", 503: "Authorization service unavailable"}
+BODIES = {401: "Unauthorized", 403: "Forbidden", 409: "Tenant choice required", 503: "Authorization service unavailable"}
 SCOPE_FIELDS = ("tenant", "brand", "domain", "mailbox")
 
 

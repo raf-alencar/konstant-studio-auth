@@ -26,10 +26,8 @@ function expressAdapter(core) {
   async function run(req, res, next, permission, scope, { approver, stepUp } = {}) {
     try {
       const resource = await resolveScope(scope, req);
-      // The x-tenant header is only a HINT, the weakest source of the tenant (see selectTenant).
-      // (a repeated header arrives joined with ", ": ambiguous, so no hint at all)
-      const hint = req.headers['x-tenant'];
-      if (hint && !String(hint).includes(',')) resource.tenantHint = String(hint);
+      // The x-tenant header is no longer consulted. Tenant selection runs in order explicit (app code) →
+      // resolver → default_tenant_id → single membership → 409 tenant_choice_required (see selectTenant).
       const requestId = cleanRunId(req.headers['x-run-id']);
       const args = { headers: req.headers, permission, resource, req, requestId };
       const d = approver ? await core.authorizeApprover({ ...args, stepUp }) : await core.authorize(args);

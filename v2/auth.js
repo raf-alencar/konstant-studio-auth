@@ -193,38 +193,63 @@ function createAuth(opts = {}) {
 
   // ---- decisions ------------------------------------------------------------
 
-  // Which tenant is this request about, and where did that come from? In order:
-  //   1. `explicit`: the route's own tenant scope (app code). Always wins.
-  //   2. the adopter's tenantResolver (app code);
-  //   3. for a Clerk session that carries an ORG: the tenant that org maps to through the snapshot's
-  //      tenant.org_id, and nothing else. If the org does not map (its tenant is not in the snapshot, the
-  //      snapshot is unavailable, or there is no snapshot) the answer is "no tenant" (tenant_required), or
-  //      "could not decide" when the snapshot is simply unavailable. NEVER the header: a token's org
-  //      cannot be moved to another tenant by anything the client sends;
-  //   4. `hint` (the x-tenant header), the weakest source, only for a principal with no org claim to
-  //      contradict it (agency, superadmin and multi-tenant users, and keys).
-  // The mapping is identity, not authority: whatever comes out, the decision still has to find the user's
-  // membership in it (an org the user does not belong to is denied, never swapped for one they do).
-  // Steps 2 and 3 run only for a principal this library has itself verified (a Clerk session): never
-  // app code or cache work on behalf of a credential the platform has not yet confirmed.
-  // -> { tenant, source } | { unavailable: true } | { orgUnmapped: true }
-  async function selectTenant(explicit, hint, principal, req) {
-    if (explicit) return { tenant: explicit, source: 'explicit' }; // '' is no tenant
-    if (principal.source === 'clerk' && principal.kind === 'human') {
-      if (cfg.tenantResolver) {
-        const t = (await cfg.tenantResolver(req, principal)) ?? null;
-        if (t) return { tenant: t, source: 'resolver' };
+  // Per-user cache for GET /v1/users/me/memberships. TTL is bounded so a default-tenant change at the
+  // platform surfaces within one TTL without hammering the endpoint on every authorize().
+  const membershipCache = new Map();
+  const MEMBERSHIP_TTL_MS = (cfg.membershipCacheTtlSeconds ?? 60) * 1000;
+
+  // -> {default_tenant_id, memberships} | null (platform could not say right now).
+  async function userMemberships(cred, principal) {
+    if (cred.type !== 'clerk' || principal.kind !== 'human' || !principal.id) return null;
+    const key = principal.id;
+    const now = cfg.monotonic();
+    const cached = membershipCache.get(key);
+    if (cached && now - cached.fetchedAt < MEMBERSHIP_TTL_MS && cached.data) return cached.data;
+    try {
+      const data = await client.memberships(cred.raw);
+      membershipCache.set(key, { fetchedAt: now, data });
+      return data;
+    } catch (err) {
+      if (err instanceof PlatformUnavailable) {
+        // Brief negative cache so a flaky platform does not stampede this endpoint.
+        membershipCache.set(key, { fetchedAt: now, data: null });
+        return null;
       }
-      const orgId = principal.claims?.org_id;
-      if (orgId) {
-        if (!cache) return { orgUnmapped: true }; // no service configured, so no snapshot to map through
-        const snap = await cache.get(); // a stale snapshot is fine here: it only names a tenant
-        if (snap.state === 'none') return { unavailable: true };
-        const mapped = snap.snapshot.tenants.find((t) => t.org_id === orgId)?.id;
-        return mapped ? { tenant: mapped, source: 'org' } : { orgUnmapped: true };
-      }
+      throw err;
     }
-    return hint ? { tenant: hint, source: 'hint' } : { tenant: null, source: null };
+  }
+
+  // Which tenant is this request about, and where did that come from? In order (decision 321168bc #12):
+  //   1. `explicit`: the route's own tenant scope (app code). Always wins. The platform's authorize()
+  //      is the final gate for reachability: a principal who neither is a member of that tenant nor
+  //      reaches it through a grant (parent/agency over brand child, per 90fdd2fe) is denied there.
+  //   2. the adopter's tenantResolver (app code), under the same rule as explicit.
+  //   3. the user's default_tenant_id from GET /v1/users/me/memberships (platform CR-P1). The platform
+  //      already drops a default that no longer points at an active membership, so an inactive default
+  //      is absent here and the next step runs.
+  //   4. exactly one active membership: use it.
+  //   5. TenantChoiceRequired. Adapters surface it as HTTP 409 tenant_choice_required.
+  // The token's Clerk org_id claim is NEVER read: a token cannot move itself off an org by naming one.
+  // There is no `hint`: the x-tenant header is gone from the selection path (consumers that still send
+  // it reach the same decision; it is ignored).
+  // Steps 2-4 run only for a locally verified Clerk session (never app code or cache work on behalf of
+  // a credential the platform has not yet confirmed).
+  // -> {tenant, source} | {unavailable: true} | {choiceRequired: true}
+  async function selectTenant(explicit, principal, cred, req) {
+    if (explicit) return { tenant: explicit, source: 'explicit' }; // '' is no tenant
+    if (principal.source !== 'clerk' || principal.kind !== 'human') {
+      return { tenant: null, source: null };
+    }
+    if (cfg.tenantResolver) {
+      const t = (await cfg.tenantResolver(req, principal)) ?? null;
+      if (t) return { tenant: t, source: 'resolver' };
+    }
+    const m = await userMemberships(cred, principal);
+    if (!m) return { unavailable: true };
+    if (m.default_tenant_id) return { tenant: m.default_tenant_id, source: 'default' };
+    const list = Array.isArray(m.memberships) ? m.memberships : [];
+    if (list.length === 1) return { tenant: list[0].tenant_id, source: 'single_membership' };
+    return { choiceRequired: true };
   }
 
   async function live(cred, principal, parsed, resource) {
@@ -321,16 +346,16 @@ function createAuth(opts = {}) {
         ownerSource = 'resource';
         ownerStale = lk.stale;
       }
-      const picked = await selectTenant(explicit, resource.tenantHint, principal, req);
+      const picked = await selectTenant(explicit, principal, cred, req);
       if (ownerSource && picked.source === 'explicit') picked.source = ownerSource;
       if (picked.unavailable) return result({ allow: false, reason: 'platform_unavailable', principal });
-      if (picked.orgUnmapped) return result({ allow: false, reason: 'tenant_required', principal });
+      if (picked.choiceRequired) return result({ allow: false, reason: 'tenant_choice_required', principal });
       const tenant = picked.tenant;
       // The platform's tenant ids are UUIDs. A caller-supplied value that is not one can never name a
       // tenant: answer it here as a denial instead of sending it on and reporting the platform's 422
       // as an outage (a client mistake must not look like platform_unavailable).
       if (tenant && !UUID_RE.test(String(tenant))) return result({ allow: false, reason: 'tenant_not_found', principal });
-      const { tenantHint: _hint, tenantOf: _tenantOf, ...rest } = resource;
+      const { tenantOf: _tenantOf, ...rest } = resource;
       const scoped = { ...rest, tenant, tenantSource: picked.source, ownerStale, category };
 
       const offlineEligible =
@@ -496,9 +521,9 @@ function createAuth(opts = {}) {
     const none = (reason, extra = {}) => ({ ok: true, principal, tenantId: null, reason, permissions: [], permits: () => false, ...extra });
     if (principal.kind === 'service') return none('service_principal_not_granted');
 
-    const picked = await selectTenant(tenant, undefined, principal, req);
+    const picked = await selectTenant(tenant, principal, cred, req);
     if (picked.unavailable) return { ok: false, reason: 'platform_unavailable', status: 503 };
-    if (picked.orgUnmapped) return none('tenant_required');
+    if (picked.choiceRequired) return none('tenant_choice_required');
     const chosen = picked.tenant;
     if (chosen && !UUID_RE.test(String(chosen))) return none('tenant_not_found');
     const body = {
@@ -549,10 +574,49 @@ function createAuth(opts = {}) {
     }
   }
 
+  // ---- tenant-audit helper ---------------------------------------------------
+  //
+  // One shape for every app's /internal/tenant-audit (service-key guarded). The digest caller gets back
+  // {ok, service, tenant_id, counts, stale}; counts is the consumer's own object (number of records
+  // per kind). The guard is the same uniform refusal as authorizeServiceCaller: a service key, from the
+  // expected caller when `callerService` is set. Nothing about the request body is logged.
+  async function tenantAudit({ headers, credential, tenantId, counts, callerService, stale } = {}) {
+    try {
+      const cred = credential ?? extract(headers);
+      const found = await principalFrom(cred);
+      if (found.denied) {
+        const reason = found.denied;
+        audited(result({ allow: false, reason }), 'tenant_audit', undefined);
+        return { ok: false, status: statusFor(reason, false), reason };
+      }
+      const principal = found.principal;
+      if (principal.kind !== 'service') {
+        audited(result({ allow: false, reason: 'service_caller_required', principal }), 'tenant_audit', undefined);
+        return { ok: false, status: 401, reason: 'service_caller_required' };
+      }
+      if (callerService && principal.service !== callerService) {
+        audited(result({ allow: false, reason: 'route_not_allowed', principal }), 'tenant_audit', undefined);
+        return { ok: false, status: 403, reason: 'route_not_allowed' };
+      }
+      audited(result({ allow: true, reason: 'allowed', principal, source: 'live' }), 'tenant_audit', undefined);
+      return {
+        ok: true,
+        status: 200,
+        service: cfg.service || null,
+        tenant_id: tenantId ?? null,
+        counts: counts && typeof counts === 'object' ? counts : {},
+        stale: !!stale,
+      };
+    } catch (err) {
+      cfg.logger.error(`auth: unexpected ${err?.name || 'error'} in tenantAudit`);
+      return { ok: false, status: 503, reason: 'platform_unavailable' };
+    }
+  }
+
   const core = {
     config: cfg, client, cache, clerk, serviceKeys,
     authorize, authorizeApprover, resolvePrincipal, effectivePermissions, authorizeServiceCaller, assertTenant, usageContext,
-    tenantFor, resourcesFor, authorizeResourceInTenant,
+    tenantFor, resourcesFor, authorizeResourceInTenant, tenantAudit,
     start() { cache?.startPolling(); return core; },
     close() { cache?.stop(); },
   };

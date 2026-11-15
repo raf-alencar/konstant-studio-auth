@@ -34,30 +34,19 @@ async function build(over = {}) {
 }
 const fakeKey = (i) => 'stgs_' + String(i).padStart(43, '0');
 
-// ---- R1: the x-tenant header cannot move a token off its org's tenant ----------------------------
-test('R1: an org-mapped tenant is not moved by an x-tenant header; the header is the weakest source', async () => {
-  const { auth, token } = await build();
-  const t = await token('bob', { extra: { org_id: 'org_acme' } });
-  const d = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenantHint: GLOBEX } });
-  assert.deepEqual([d.allow, d.tenantId, d.tenantSource], [true, ACME, 'org'], 'bob is a member of BOTH, but the token says acme');
-
-  const noOrg = await auth.authorize({ headers: { authorization: `Bearer ${await token('bob')}` }, permission: 'docs:read', resource: { tenantHint: GLOBEX } });
-  assert.deepEqual([noOrg.allow, noOrg.tenantId, noOrg.tenantSource], [true, GLOBEX, 'hint'], 'with nothing else naming a tenant the hint is used (and still needs a membership)');
-
-  const explicit = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenant: GLOBEX, tenantHint: ACME } });
-  assert.deepEqual([explicit.tenantId, explicit.tenantSource], [GLOBEX, 'explicit']);
-});
-
-test('R1: the tenant resolver beats the hint, and the audit event says where the tenant came from', async () => {
+// ---- select-tenant: the v2 order, with no org_id mapping and no x-tenant hint ---------------------
+test('select-tenant: the resolver beats the default, and the audit event says where the tenant came from', async () => {
   const events = [];
-  const { auth, token } = await build({ tenantResolver: () => GLOBEX, onEvent: (e) => events.push(e) });
-  const d = await auth.authorize({ headers: { authorization: `Bearer ${await token('bob')}` }, permission: 'docs:read', resource: { tenantHint: ACME } });
+  const { auth, fake, token } = await build({ tenantResolver: () => GLOBEX, onEvent: (e) => events.push(e) });
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: world.id('tenant', 'acme'), memberships: [] } };
+  const d = await auth.authorize({ headers: { authorization: `Bearer ${await token('bob')}` }, permission: 'docs:read' });
   assert.deepEqual([d.tenantId, d.tenantSource], [GLOBEX, 'resolver']);
   assert.equal(events.at(-1).tenant_source, 'resolver');
 });
 
-test('R1: the v1-shaped req.auth carries no orgId: the only scoping key is tenantId', async (t) => {
-  const { auth, token } = await build();
+test('select-tenant: req.auth has no orgId/orgRole; the only scoping key is tenantId', async (t) => {
+  const { auth, fake, token } = await build();
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: ACME, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
   const app = express();
   app.get('/x', auth.express.requirePermission('docs:read', {}), (req, res) => res.json({ auth: req.auth, decisionTenant: req.authDecision.tenantId }));
   const server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
@@ -67,6 +56,7 @@ test('R1: the v1-shaped req.auth carries no orgId: the only scoping key is tenan
   })).json();
   assert.equal('orgId' in r.auth, false);
   assert.equal('orgRole' in r.auth, false);
+  // org_id in the token is ignored; the default (acme) picks; the x-tenant header does not move it.
   assert.deepEqual([r.auth.tenantId, r.auth.clerkOrgId, r.auth.isSuperadmin], [ACME, 'org_acme', false]);
   assert.equal(r.auth.tenantId, r.decisionTenant);
 });
@@ -350,27 +340,21 @@ test('step-up denial explains itself: MFA must be enabled and the fva claim pres
 });
 
 // ---- CoS verdict 2: the final fixes -------------------------------------------------------------------
-test('V2-1: with an org claim the header is never a fallback: unmapped org => tenant_required, even with no service configured', async () => {
-  const none = await build({ service: '' }); // no service => no snapshot to map through
-  const t = await none.token('bob', { extra: { org_id: 'org_acme' } });
-  const d = await none.auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenantHint: GLOBEX } });
-  assert.deepEqual([d.allow, d.reason, d.source], [false, 'tenant_required', 'none']);
-  assert.equal(none.fake.count('POST', '/v1/authorize'), 0, 'not sent on to the platform with the header either');
-});
-
-test('V2-1: an explicit route tenant and the app resolver still win over an org claim (they are app code, not client input)', async () => {
-  const { auth, token } = await build({ tenantResolver: () => GLOBEX });
-  const t = await token('bob', { extra: { org_id: 'org_dormant' } }); // an org that does not map
+test('CR select-tenant: an explicit route tenant and the app resolver win over the default (they are app code, not client input)', async () => {
+  const { auth, fake, token } = await build({ tenantResolver: () => GLOBEX });
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: ACME, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
+  const t = await token('bob');
   const viaResolver = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read' });
   assert.deepEqual([viaResolver.allow, viaResolver.tenantId, viaResolver.tenantSource], [true, GLOBEX, 'resolver']);
   const explicit = await auth.authorize({ headers: { authorization: `Bearer ${t}` }, permission: 'docs:read', resource: { tenant: ACME } });
   assert.deepEqual([explicit.tenantId, explicit.tenantSource], [ACME, 'explicit']);
 });
 
-test('V2-1: effectivePermissions follows the same rule', async () => {
-  const { auth, token } = await build();
-  const unmapped = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice', { extra: { org_id: 'org_dormant' } })}` } });
-  assert.deepEqual([unmapped.ok, unmapped.reason, unmapped.permissions], [true, 'tenant_required', []]);
+test('CR select-tenant: effectivePermissions follows the same order, answering tenant_choice_required when nothing picks', async () => {
+  const { auth, fake, token } = await build();
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: null, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
+  const r = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('bob')}` } });
+  assert.deepEqual([r.ok, r.reason, r.permissions], [true, 'tenant_choice_required', []]);
 });
 
 test('V2-2: list options must be arrays of non-empty strings (a string passes `includes` and splits into characters)', () => {
@@ -432,23 +416,19 @@ test('V2-5: a malformed resolve reply is "could not decide", never cached as an 
   assert.ok(asked >= 3, 'asked again each time: nothing was cached');
 });
 
-test('V2-5: a repeated x-tenant header is ambiguous: no hint at all (Express and Next)', async (t) => {
-  const { auth, token, fake } = await build();
-  let body;
-  fake.override = (path, b) => { if (path === '/v1/authorize') { body = b; return { allow: false, reason: 'tenant_required' }; } };
+test('CR select-tenant: the x-tenant header is ignored by the adapters (hint is gone; the order is explicit → resolver → default → single → 409)', async (t) => {
+  const { auth, fake, token } = await build();
+  fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: ACME, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
   const app = express();
-  app.get('/x', auth.express.requirePermission('docs:read', {}), (req, res) => res.json({}));
+  app.get('/x', auth.express.requirePermission('docs:read', {}), (req, res) => res.json({ tenantId: req.authDecision.tenantId, tenantSource: req.authDecision.tenantSource }));
   const server = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
   t.after(() => server.close());
   const bearer = `Bearer ${await token('bob')}`;
-  const send = (headers) => new Promise((resolve) => {
-    const req = http.request({ host: '127.0.0.1', port: server.address().port, path: '/x', headers }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
-    req.end();
-  });
-  await send({ authorization: bearer, 'x-tenant': [ACME, GLOBEX] }); // sent twice
-  assert.equal(body.resource.tenant_id, undefined, 'neither value became a tenant');
-  const nextRes = await auth.next.authorizeRequest(new Request('http://app.test/x', { headers: { authorization: bearer, 'x-tenant': `${ACME}, ${GLOBEX}` } }), 'docs:read', {});
-  assert.equal(nextRes.tenantSource, null, 'Next: joined repeated header ignored');
+  const r = await (await fetch(`http://127.0.0.1:${server.address().port}/x`, { headers: { authorization: bearer, 'x-tenant': GLOBEX } })).json();
+  assert.equal(r.tenantId, ACME, 'the default picked; the header did not move it');
+  assert.equal(r.tenantSource, 'default');
+  const nextRes = await auth.next.authorizeRequest(new Request('http://app.test/x', { headers: { authorization: bearer, 'x-tenant': GLOBEX } }), 'docs:read', {});
+  assert.equal(nextRes.tenantSource, 'default', 'Next: the header is not consulted either');
 });
 
 test('V2-5: effectivePermissions degrades to a 503 instead of throwing (it is informational)', async () => {

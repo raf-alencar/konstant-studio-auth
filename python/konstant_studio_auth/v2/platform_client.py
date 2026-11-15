@@ -101,3 +101,12 @@ class PlatformClient:
         if not resp.is_success:
             raise PlatformUnavailable(f"resolve HTTP {resp.status_code}")
         return resp.json()
+
+    async def memberships(self, clerk_token):
+        """GET /v1/users/me/memberships (platform CR-P1): the signed-in human's memberships and default
+        tenant. The user's Clerk session is carried in X-Acting-Token; the service key still authenticates
+        the transport."""
+        resp = await self._request("GET", "/v1/users/me/memberships", headers={"X-Acting-Token": clerk_token})
+        if not resp.is_success:
+            raise PlatformUnavailable(f"memberships HTTP {resp.status_code}")
+        return resp.json()

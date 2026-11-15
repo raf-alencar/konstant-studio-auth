@@ -49,33 +49,23 @@ def build(make_harness, world, clerk_keys):
     return _build
 
 
-# ---- R1: the x-tenant header cannot move a token off its org's tenant ------------------------------
+# ---- select-tenant: the v2 order, with no org_id mapping and no x-tenant hint ---------------------
 
 
-async def test_r1_org_mapped_tenant_is_not_moved_by_a_hint(build):
-    h = build()
-    d = await h.auth.authorize(headers=h.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read", resource={"tenant_hint": h.globex})
-    assert (d.allow, d.tenant_id, d.tenant_source) == (True, h.acme, "org"), "bob is a member of BOTH, but the token says acme"
-
-    no_org = await h.auth.authorize(headers=h.bearer("bob"), permission="docs:read", resource={"tenant_hint": h.globex})
-    assert (no_org.allow, no_org.tenant_id, no_org.tenant_source) == (True, h.globex, "hint"), "with nothing else naming a tenant the hint is used (and still needs a membership)"
-
-    explicit = await h.auth.authorize(headers=h.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read", resource={"tenant": h.globex, "tenant_hint": h.acme})
-    assert (explicit.tenant_id, explicit.tenant_source) == (h.globex, "explicit")
-
-
-async def test_r1_resolver_beats_the_hint_and_the_audit_event_says_where_the_tenant_came_from(build):
+async def test_select_tenant_resolver_beats_the_default_and_the_audit_event_says_where_the_tenant_came_from(build, world):
     events = []
     gl = None
     h = build(tenant_resolver=lambda req, p: gl, on_event=events.append)
     gl = h.globex
-    d = await h.auth.authorize(headers=h.bearer("bob"), permission="docs:read", resource={"tenant_hint": h.acme})
+    h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": h.acme, "memberships": []}}
+    d = await h.auth.authorize(headers=h.bearer("bob"), permission="docs:read")
     assert (d.tenant_id, d.tenant_source) == (h.globex, "resolver")
     assert events[-1]["tenant_source"] == "resolver"
 
 
-def test_r1_legacy_auth_carries_no_org_id_the_only_scoping_key_is_tenant_id(build):
+def test_select_tenant_legacy_auth_has_no_org_id_only_scoping_key_is_tenant_id(build, world):
     h = build()
+    h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": h.acme, "memberships": [{"tenant_id": h.acme}, {"tenant_id": h.globex}]}}
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/x")
@@ -83,6 +73,7 @@ def test_r1_legacy_auth_carries_no_org_id_the_only_scoping_key_is_tenant_id(buil
         return {"auth": request.state.auth, "decision_tenant": d.tenant_id}
 
     with TestClient(app) as c:
+        # org_id in the token is ignored; the default (acme) picks; x-tenant does not move it.
         r = c.get("/x", headers={**h.bearer("bob", {"extra": {"org_id": "org_acme", "org_role": "org:admin"}}), "x-tenant": h.globex}).json()
     assert "org_id" not in r["auth"] and "org_role" not in r["auth"]
     assert (r["auth"]["tenant_id"], r["auth"]["clerk_org_id"], r["auth"]["is_superadmin"]) == (h.acme, "org_acme", False)
@@ -510,45 +501,29 @@ def test_a_repeated_credential_header_is_a_clean_401(build, world):
 # ---- V2-*: the second CoS review (13ae0c4) --------------------------------------------------------------
 
 
-async def test_v2_1_with_an_org_claim_the_header_is_never_a_fallback(make_harness, world, clerk_keys):
-    # no service => no snapshot to map through
-    h = make_harness(service="", separate_monotonic=True)
-    tok = mint_clerk_token(clerk_keys, "user_bob", h.now(), ISS, AZP, {"extra": {"org_id": "org_acme"}})
-    d = await h.auth.authorize(headers={"authorization": f"Bearer {tok}"}, permission="docs:read", resource={"tenant_hint": world.id("tenant", "globex")})
-    assert (d.allow, d.reason, d.source) == (False, "tenant_required", "none")
-    assert h.fake.count("POST", "/v1/authorize") == 0, "not sent on to the platform with the header either"
-
-
-async def test_v2_1_explicit_and_resolver_still_win_over_an_org_claim(build, world):
+async def test_select_tenant_explicit_and_resolver_win_over_the_default(build, world):
     globex, acme = world.id("tenant", "globex"), world.id("tenant", "acme")
     h = build(tenant_resolver=lambda req, p: globex)
-    hd = h.bearer("bob", {"extra": {"org_id": "org_dormant"}})  # an org that does not map
+    h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": acme, "memberships": [{"tenant_id": acme}, {"tenant_id": globex}]}}
+    hd = h.bearer("bob")
     via_resolver = await h.auth.authorize(headers=hd, permission="docs:read")
     assert (via_resolver.allow, via_resolver.tenant_id, via_resolver.tenant_source) == (True, globex, "resolver")
     explicit = await h.auth.authorize(headers=hd, permission="docs:read", resource={"tenant": acme})
     assert (explicit.tenant_id, explicit.tenant_source) == (acme, "explicit")
 
 
-async def test_v2_1_unmapped_org_is_tenant_required_and_an_unreadable_snapshot_is_503(build, world):
+async def test_select_tenant_effective_permissions_follow_the_same_order(build, world):
+    """When the user has several memberships and nothing names a tenant, effectivePermissions
+    answers with tenant_choice_required (same surface as authorize)."""
+    acme, globex = world.id("tenant", "acme"), world.id("tenant", "globex")
     h = build()
-    d = await h.auth.authorize(headers=h.bearer("alice", {"extra": {"org_id": "org_dormant"}}), permission="docs:read",
-                               resource={"tenant_hint": world.id("tenant", "globex")})
-    assert (d.allow, d.reason, d.status, d.source) == (False, "tenant_required", 403, "none")
+    h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": None, "memberships": [{"tenant_id": acme}, {"tenant_id": globex}]}}
+    r = await h.auth.effective_permissions(headers=h.bearer("bob"))
+    assert (r.ok, r.reason, r.permissions) == (True, "tenant_choice_required", [])
     cold = build()
     cold.fake.down = True
-    d = await cold.auth.authorize(headers=cold.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read",
-                                  resource={"tenant_hint": world.id("tenant", "globex")})
-    assert (d.allow, d.reason, d.status) == (False, "platform_unavailable", 503)
-
-
-async def test_v2_1_effective_permissions_follow_the_same_rule(build):
-    h = build()
-    unmapped = await h.auth.effective_permissions(headers=h.bearer("alice", {"extra": {"org_id": "org_dormant"}}))
-    assert (unmapped.ok, unmapped.reason, unmapped.permissions) == (True, "tenant_required", [])
-    cold = build()
-    cold.fake.down = True
-    r = await cold.auth.effective_permissions(headers=cold.bearer("bob", {"extra": {"org_id": "org_acme"}}))
-    assert (r.ok, r.reason, r.status) == (False, "platform_unavailable", 503)
+    r2 = await cold.auth.effective_permissions(headers=cold.bearer("bob"))
+    assert (r2.ok, r2.reason, r2.status) == (False, "platform_unavailable", 503)
 
 
 def test_v2_2_list_options_must_be_lists_of_non_empty_strings():
@@ -631,25 +606,24 @@ def test_v2_5_policy_entries_with_semicolon_backslash_or_many_double_stars_are_w
             auth.require_service_caller({"image": [bad]})
 
 
-def test_v2_5_a_repeated_or_comma_joined_x_tenant_header_is_no_hint_at_all(build, world):
+def test_select_tenant_x_tenant_header_is_ignored_the_order_is_explicit_resolver_default_single_409(build, world):
+    """The x-tenant hint is gone. The decision follows explicit → resolver → default_tenant_id →
+    single membership → 409 tenant_choice_required. A repeated header does not change that."""
     h = build()
-    seen = []
-    h.fake.override = lambda path, body: (seen.append(body) or {"allow": False, "reason": "tenant_required"}) if path == "/v1/authorize" else None
+    acme, globex = world.id("tenant", "acme"), world.id("tenant", "globex")
+    h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": acme, "memberships": [{"tenant_id": acme}, {"tenant_id": globex}]}}
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/x")
-    async def x(d=Depends(h.auth.require_permission("docs:read"))):
-        return {}
+    async def x(request: Request, d=Depends(h.auth.require_permission("docs:read"))):
+        return {"tenant_id": d.tenant_id, "tenant_source": d.tenant_source}
 
-    acme, globex = world.id("tenant", "acme"), world.id("tenant", "globex")
     with TestClient(app) as c:
-        c.get("/x", headers=[("authorization", h.bearer("bob")["authorization"]), ("x-tenant", acme), ("x-tenant", globex)])
-        c.get("/x", headers={**h.bearer("bob"), "x-tenant": f"{acme}, {globex}"})
-    assert len(seen) == 2 and all("tenant_id" not in b["resource"] for b in seen), "neither value became a tenant"
-    seen.clear()
-    with TestClient(app) as c:  # a single value is still a hint
-        r = c.get("/x", headers={**h.bearer("bob"), "x-tenant": acme})
-    assert r.status_code == 200 and seen == [], "used as a hint: decided offline for that tenant"
+        single = c.get("/x", headers={**h.bearer("bob"), "x-tenant": globex})
+        repeated = c.get("/x", headers=[("authorization", h.bearer("bob")["authorization"]), ("x-tenant", acme), ("x-tenant", globex)])
+    assert single.status_code == 200 and single.json()["tenant_source"] == "default"
+    assert single.json()["tenant_id"] == acme, "the header did not move the default"
+    assert repeated.status_code == 200 and repeated.json()["tenant_source"] == "default"
 
 
 async def test_v2_5_effective_permissions_degrades_to_503_instead_of_raising(build):

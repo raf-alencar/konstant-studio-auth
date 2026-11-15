@@ -231,6 +231,38 @@ class FakePlatform {
       return this._json({ events: this.events || [], next_cursor: Number(u.searchParams.get('after')) + (this.events?.length || 0), head: this.snapshotVersion });
     }
 
+    // GET /v1/users/me/memberships (platform CR-P1): default_tenant_id + the user's active memberships.
+    // Tests can set `membershipsFor[sub]` to pin a specific response; otherwise the response is derived
+    // from the world's memberships (every active row for this user, with its scope).
+    if (method === 'GET' && u.pathname === '/v1/users/me/memberships') {
+      const acting = init.headers?.['X-Acting-Token'] || init.headers?.['x-acting-token'];
+      if (!acting) return this._json({ detail: 'X-Acting-Token required' }, 401);
+      const parts = acting.split('.');
+      let sub = null;
+      try { sub = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8')).sub; } catch {}
+      if (this.membershipsFor && this.membershipsFor[sub]) {
+        const spec = this.membershipsFor[sub];
+        return this._json({ user_id: null, identity: { provider: 'clerk', subject: sub }, default_tenant_id: spec.default_tenant_id, memberships: spec.memberships });
+      }
+      // Auto-derive from the world.
+      const principal = this.world.spec.principals.find((p) => p.user_id === sub);
+      if (!principal) return this._json({ user_id: null, identity: { provider: 'clerk', subject: sub }, default_tenant_id: null, memberships: [] });
+      const tenantById = new Map(this.world.spec.tenants.map((t) => [t.ref, t]));
+      const rows = (this.world.spec.memberships || [])
+        .filter((m) => m.principal === principal.ref && m.kind !== 'service')
+        .filter((m) => tenantById.get(m.tenant)?.status === 'active')
+        .map((m) => ({
+          tenant_id: this.world.id('tenant', m.tenant), tenant_slug: m.tenant, tenant_name: m.tenant,
+          tenant_type: tenantById.get(m.tenant)?.type, role_slug: m.role, scope: m.scope || {},
+          status: 'active', expires_at: m.expires_at ?? null, entitled_services: [],
+        }));
+      return this._json({
+        user_id: this.world.id('principal', principal.ref),
+        identity: { provider: 'clerk', subject: sub },
+        default_tenant_id: null, memberships: rows,
+      });
+    }
+
     const cred = body.credential;
     const key = cred ? this.world.keyByRaw.get(cred) : null;
     const keyProblem = cred && (!key || key.state === 'unknown' ? 'key_not_found' : { revoked: 'key_revoked', expired: 'key_expired' }[key.state]);

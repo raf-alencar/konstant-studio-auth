@@ -86,9 +86,10 @@ async def test_permits_is_some_scope_entry_admits(make_harness, world, clerk_key
 
 async def test_uncomputable_effective_permissions_come_back_empty_with_the_reason(make_harness, world, clerk_keys):
     r = make(make_harness, world, clerk_keys)
-    r.effective_reply = lambda b: eff(None, [], reason="tenant_required")
+    # Bob has two memberships and no default: the library answers tenant_choice_required before any platform call.
+    r.h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": None, "memberships": [{"tenant_id": world.id("tenant", "acme")}, {"tenant_id": world.id("tenant", "globex")}]}}
     e = await r.h.auth.effective_permissions(headers=r.bearer("bob"))
-    assert (e.ok, e.reason, e.permissions, e.permits("docs:read", {})) == (True, "tenant_required", [], False)
+    assert (e.ok, e.reason, e.permissions, e.permits("docs:read", {})) == (True, "tenant_choice_required", [], False)
 
 
 async def test_service_principal_holds_none_and_platform_trouble_is_503(make_harness, world, clerk_keys):
@@ -111,34 +112,21 @@ async def test_service_principal_holds_none_and_platform_trouble_is_503(make_har
     assert g.reason == "tenant_not_found"
 
 
-async def test_resolver_wins_over_the_org_claim(make_harness, world, clerk_keys):
-    globex = world.id("tenant", "globex")
+async def test_resolver_wins_over_any_org_claim(make_harness, world, clerk_keys):
+    globex, acme = world.id("tenant", "globex"), world.id("tenant", "acme")
     r = make(make_harness, world, clerk_keys, tenant_resolver=lambda req, p: globex)
+    r.h.fake.memberships_for = {world.principal("bob")["user_id"]: {"default_tenant_id": acme, "memberships": [{"tenant_id": acme}, {"tenant_id": globex}]}}
     d = await r.h.auth.authorize(headers=r.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read")
     assert d.tenant_id == globex and d.source == "offline"
 
 
-async def test_org_mapping_is_for_humans_only(make_harness, world, clerk_keys):
+async def test_key_principals_do_not_hit_users_me_memberships(make_harness, world, clerk_keys):
     r = make(make_harness, world, clerk_keys)
     r.h.fake.live = {"allow": True, "reason": "allowed", "tenant": "acme", "roles": ["operator"]}
     key = world.raw_key(next(k for k in world.spec["keys"] if k["ref"] == "agent_acme_active"))
     d = await r.h.auth.authorize(headers={"x-api-key": key, "authorization": "Bearer x.y.z"}, permission="docs:read")
     assert (d.allow, d.source) == (True, "live")
-    assert r.h.fake.count("GET", "/v1/authorize/snapshot") == 0, "no snapshot lookup for a key principal"
-
-
-async def test_org_mapping_uses_a_stale_snapshot_but_never_none(make_harness, world, clerk_keys):
-    r = make(make_harness, world, clerk_keys)
-    await r.h.auth.cache.get()
-    r.h.advance(120)  # past the TTL, inside the stale-read window
-    r.h.fake.down = True
-    stale = await r.h.auth.authorize(headers=r.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read")
-    assert (stale.allow, stale.tenant_id, stale.stale) == (True, world.id("tenant", "acme"), True)
-
-    cold = make(make_harness, world, clerk_keys)
-    cold.h.fake.down = True
-    none = await cold.h.auth.authorize(headers=cold.bearer("bob", {"extra": {"org_id": "org_acme"}}), permission="docs:read")
-    assert (none.allow, none.reason) == (False, "platform_unavailable")
+    assert r.h.fake.count("GET", "/v1/users/me/memberships") == 0, "not called for a key principal"
 
 
 async def test_clerk_v1_and_v2_token_shapes(make_harness, world, clerk_keys):

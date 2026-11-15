@@ -35,8 +35,8 @@ function nextAdapter(core) {
 
   async function authorizeRequestUnsafe(request, permission, scope, ctx, opts) {
     const resource = await resolveScope(scope, request, ctx);
-    const hint = request.headers.get('x-tenant');
-    if (hint && !hint.includes(',')) resource.tenantHint = hint; // a repeated header arrives joined: ambiguous, no hint
+    // The x-tenant header is no longer consulted. Tenant selection runs in order explicit → resolver →
+    // default_tenant_id → single membership → 409 tenant_choice_required (see selectTenant).
     const args = {
       headers: request.headers, permission, resource, req: request,
       requestId: cleanRunId(request.headers.get('x-run-id')),

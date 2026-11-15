@@ -226,6 +226,7 @@ class FakePlatform:
         self.override = None  # fn(path, body) -> dict | httpx.Response | None
         self.service_resolves = []  # expect_service of every stgs_ resolve, in order
         self.service_key_expires_at = None
+        self.memberships_for = {}  # {sub: {"default_tenant_id": uuid|None, "memberships": [...]}}
         self.transport = httpx.MockTransport(self.handle)
 
     def count(self, method, path):
@@ -283,6 +284,45 @@ class FakePlatform:
         if method == "GET" and u.path == "/v1/events":
             after = int(parse_qs(u.query)["after"][0])
             return _json({"events": self.events, "next_cursor": after + len(self.events), "head": self.snapshot_version})
+        if method == "GET" and u.path == "/v1/users/me/memberships":
+            # GET /v1/users/me/memberships (platform CR-P1): default_tenant_id + the user's active
+            # memberships. Tests can pin a sub's response; otherwise derive from world.memberships.
+            acting = request.headers.get("x-acting-token")
+            if not acting:
+                return _json({"detail": "X-Acting-Token required"}, 401)
+            try:
+                payload = acting.split(".")[1]
+                payload += "=" * (-len(payload) % 4)
+                sub = json.loads(base64.urlsafe_b64decode(payload)).get("sub")
+            except Exception:  # noqa: BLE001
+                sub = None
+            if sub in self.memberships_for:
+                spec = self.memberships_for[sub]
+                return _json({
+                    "user_id": None, "identity": {"provider": "clerk", "subject": sub},
+                    "default_tenant_id": spec.get("default_tenant_id"), "memberships": spec.get("memberships", []),
+                })
+            principal = next((p for p in w.spec["principals"] if p.get("user_id") == sub), None)
+            if principal is None:
+                return _json({"user_id": None, "identity": {"provider": "clerk", "subject": sub}, "default_tenant_id": None, "memberships": []})
+            tenants_by_ref = {t["ref"]: t for t in w.spec["tenants"]}
+            rows = []
+            for m in w.spec.get("memberships", []):
+                if m["principal"] != principal["ref"] or m.get("kind") == "service":
+                    continue
+                if tenants_by_ref.get(m["tenant"], {}).get("status") != "active":
+                    continue
+                rows.append({
+                    "tenant_id": w.id("tenant", m["tenant"]), "tenant_slug": m["tenant"], "tenant_name": m["tenant"],
+                    "tenant_type": tenants_by_ref.get(m["tenant"], {}).get("type"), "role_slug": m["role"],
+                    "scope": m.get("scope") or {}, "status": "active", "expires_at": m.get("expires_at"),
+                    "entitled_services": [],
+                })
+            return _json({
+                "user_id": w.id("principal", principal["ref"]),
+                "identity": {"provider": "clerk", "subject": sub},
+                "default_tenant_id": None, "memberships": rows,
+            })
 
         cred = body.get("credential")
         key = w.keys_by_raw.get(cred) if cred else None

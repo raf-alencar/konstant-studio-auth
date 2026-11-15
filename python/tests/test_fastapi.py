@@ -97,7 +97,10 @@ def test_403_has_reason_and_no_internals(rig):
 
 
 def test_not_entitled_carries_upgrade_url(rig):
-    r = rig.client.get("/by-header", headers={**rig.bearer("alice"), "x-tenant": rig.world.id("tenant", "dormant")})
+    # The x-tenant hint is gone, so this exercise forces /v1/authorize to answer not_entitled directly
+    # for a sensitive permission (delete goes live) and checks the shared denial body shape.
+    rig.h.fake.live = {"allow": False, "reason": "not_entitled", "tenant": "acme"}
+    r = rig.client.delete("/doc", headers=rig.bearer("alice"))
     assert r.status_code == 403
     assert r.json() == {"detail": {"error": "No access to this service", "reason": "not_entitled", "upgrade_url": "https://www.konstant-studio.com/dashboard"}}
 
@@ -116,17 +119,13 @@ def test_sensitive_goes_live_and_allows(rig):
     assert r.status_code == 200 and rig.h.fake.count("POST", "/v1/authorize") == 1
 
 
-def test_x_tenant_header_only_when_no_tenant_scope(rig):
-    # no scope tenant: the header names the tenant, decided offline
+def test_x_tenant_header_is_ignored_selection_follows_the_cr_order(rig):
+    # alice has a single membership (acme): with or without a header, the decision lands on acme.
     r = rig.client.get("/by-header", headers={**rig.bearer("alice"), "x-tenant": rig.acme})
     assert r.status_code == 200 and r.json() == {"tenant": rig.acme}
-    # scope tenant given: a hostile header must not redirect the decision
+    # a hostile x-tenant header does not move the decision.
     r = rig.client.get("/docs-read", headers={**rig.bearer("alice"), "x-tenant": rig.world.id("tenant", "globex")})
     assert r.status_code == 200 and r.json()["tenant"] == rig.acme
-    # neither: the platform answers tenant_required
-    rig.h.fake.live = {"allow": False, "reason": "tenant_required", "tenant": None}
-    r = rig.client.get("/by-header", headers=rig.bearer("alice"))
-    assert r.status_code == 403 and r.json()["detail"]["reason"] == "tenant_required"
 
 
 def test_callable_scopes_sync_and_async(rig):

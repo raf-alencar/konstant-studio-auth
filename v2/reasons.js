@@ -27,6 +27,7 @@ function statusFor(reason, allow) {
   if (allow) return 200;
   if (UNAUTHENTICATED.has(reason)) return 401;
   if (UNAVAILABLE.has(reason)) return 503;
+  if (reason === 'tenant_choice_required') return 409;
   return 403;
 }
 

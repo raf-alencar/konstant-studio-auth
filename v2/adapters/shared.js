@@ -3,7 +3,7 @@
 // nothing else a caller could not already know: no tenant ids, no principal
 // details, no platform error text.
 
-const BODIES = { 401: 'Unauthorized', 403: 'Forbidden', 503: 'Authorization service unavailable' };
+const BODIES = { 401: 'Unauthorized', 403: 'Forbidden', 409: 'Tenant choice required', 503: 'Authorization service unavailable' };
 
 // scope: { tenant, brand, domain, mailbox }, each a string or (…args) => string|undefined.
 async function resolveScope(scope = {}, ...args) {
