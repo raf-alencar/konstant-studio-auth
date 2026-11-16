@@ -59,6 +59,14 @@ async def test_shared_vector(c, make_harness, world, clerk_keys):
     exp = c["expect"]
     if c.get("omit_resources"):
         h.fake.omit_resources = True  # a platform whose snapshot has no registry field
+    if c.get("memberships_override"):
+        h.fake.memberships_for = {}
+        for ref, spec in c["memberships_override"].items():
+            sub = world.principal(ref)["user_id"]
+            h.fake.memberships_for[sub] = {
+                "default_tenant_id": world.id("tenant", spec["default_tenant_id"]) if spec.get("default_tenant_id") else None,
+                "memberships": [{"tenant_id": world.id("tenant", t)} for t in (spec.get("memberships") or [])],
+            }
     key = next((k for k in world.spec["keys"] if k["ref"] == c["who"].get("key")), None)
     is_service_key = bool(key and key["kind"] == "service")
 

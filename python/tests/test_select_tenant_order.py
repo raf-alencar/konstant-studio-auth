@@ -90,11 +90,19 @@ async def test_grant_allowed(build):
     assert d.via_tenant == h.root
 
 
-async def test_sibling_denied(build):
+async def test_sibling_denied_cl_a_to_cl_b(build):
     h = build()
     # alice is only a member of acme; asking about globex is denied by the platform.
     h.fake.live = {"allow": False, "reason": "no_permission"}
     d = await h.auth.authorize(headers=h.bearer("alice"), permission="docs:read", resource={"tenant": h.globex})
+    assert (d.allow, d.reason) == (False, "no_permission")
+
+
+async def test_sibling_denied_brand_to_root(build):
+    # brandy is a member of only acme_brand; asking about root goes live and is denied.
+    h = build()
+    h.fake.live = {"allow": False, "reason": "no_permission"}
+    d = await h.auth.authorize(headers=h.bearer("brandy"), permission="docs:read", resource={"tenant": h.root})
     assert (d.allow, d.reason) == (False, "no_permission")
 
 
@@ -122,6 +130,22 @@ async def test_org_id_invariance(build):
     assert (without_org.tenant_id, without_org.tenant_source, without_org.allow) == (h.acme, "single_membership", True)
     other_org = await h.auth.authorize(headers=h.bearer("alice", {"extra": {"org_id": "org_globex"}}), permission="docs:read")
     assert (other_org.tenant_id, other_org.tenant_source) == (h.acme, "single_membership")
+
+
+async def test_org_id_invariance_effective_permissions(build):
+    """effectivePermissions follows the same rule: the same token with and without an org_id
+    (v1 or v2 shape) returns an identical result."""
+    h = build()
+    reply = {"valid": True, "principal": {"id": "p", "kind": "human", "user_id": "user_alice", "tenant_id": h.acme},
+             "effective": {"tenant_id": h.acme, "reason": None, "permissions": [
+                 {"permission": "docs:read", "service": "docs", "action": "read", "category": "read", "sensitive": False,
+                  "scopes": [{"scope": {}, "role": "operator", "via_tenant": None}]}]}}
+    h.fake.override = lambda path, body: reply if path == "/v1/principals/resolve" and body.get("include_effective") else None
+    without_org = await h.auth.effective_permissions(headers=h.bearer("alice"), tenant=h.acme)
+    with_v1 = await h.auth.effective_permissions(headers=h.bearer("alice", {"extra": {"org_id": "org_globex"}}), tenant=h.acme)
+    with_v2 = await h.auth.effective_permissions(headers=h.bearer("alice", {"extra": {"o": {"id": "org_globex", "rol": "admin"}}}), tenant=h.acme)
+    for r in (without_org, with_v1, with_v2):
+        assert (r.ok, r.tenant_id, len(r.permissions)) == (True, h.acme, 1)
 
 
 # ---- hint refused -------------------------------------------------------------------------

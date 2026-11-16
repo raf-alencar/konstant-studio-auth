@@ -34,6 +34,16 @@ async function setup(c, keys) {
     tenantResolver: c.ask.resolver_tenant ? () => idOf(c.ask.resolver_tenant) : null,
     onEvent: (e) => events.push(e),
   });
+  if (c.memberships_override) {
+    fake.membershipsFor = {};
+    for (const [ref, spec] of Object.entries(c.memberships_override)) {
+      const sub = world.principal(ref).user_id;
+      fake.membershipsFor[sub] = {
+        default_tenant_id: spec.default_tenant_id ? idOf(spec.default_tenant_id) : null,
+        memberships: (spec.memberships || []).map((t) => ({ tenant_id: idOf(t) })),
+      };
+    }
+  }
   return { fake, auth, events, advance: (s) => { clock += s * 1000; }, now: () => clock };
 }
 

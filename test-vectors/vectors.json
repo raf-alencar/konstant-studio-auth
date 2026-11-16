@@ -313,6 +313,11 @@
         "user_id": "user_stu"
       },
       {
+        "ref": "brandy",
+        "kind": "human",
+        "user_id": "user_brandy"
+      },
+      {
         "ref": "tim",
         "kind": "human",
         "user_id": "user_tim",
@@ -410,6 +415,11 @@
         "principal": "pat",
         "tenant": "root",
         "role": "viewer"
+      },
+      {
+        "principal": "brandy",
+        "tenant": "acme_brand",
+        "role": "operator"
       },
       {
         "principal": "sam",
@@ -2181,6 +2191,270 @@
         "reason": "service_principal_not_granted",
         "status": 403
       }
+    },
+    {
+      "$comment": "---- org_id invariance (CR 53a0f327): the same token with and without a Clerk org_id claim (v1 org_id, v2 o.id) gives an identical decision at every selection branch: explicit, resolver, default, single and the 409. These vectors convert the pre-CR org-claim-* cases.",
+      "id": "org_id-invariance-explicit-no-org",
+      "desc": "explicit: no org claim, member of the named tenant",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org_id-invariance-explicit-v1-org",
+      "desc": "explicit: a v1 Clerk org_id that would name a different tenant does not move the decision",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_globex"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org_id-invariance-explicit-v2-org",
+      "desc": "explicit: Clerk's v2 token shape (o.id) is likewise ignored for selection",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "o": {
+              "id": "org_globex",
+              "rol": "admin"
+            }
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org_id-invariance-resolver-no-org",
+      "desc": "resolver: no org claim, the adopter's resolver picks",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read",
+        "resolver_tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org_id-invariance-resolver-with-org",
+      "desc": "resolver: a conflicting Clerk org_id does not move what the resolver picked",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_globex"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read",
+        "resolver_tenant": "acme"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      }
+    },
+    {
+      "id": "org_id-invariance-default-no-org",
+      "desc": "default_tenant_id picks: no org claim",
+      "who": {
+        "clerk": "bob"
+      },
+      "memberships_override": {
+        "bob": {
+          "default_tenant_id": "globex",
+          "memberships": [
+            "acme",
+            "globex"
+          ]
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "globex",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity": false,
+      "parity_note": "default_tenant_id selection is library-side"
+    },
+    {
+      "id": "org_id-invariance-default-with-org",
+      "desc": "default_tenant_id picks: a conflicting Clerk org_id does not move it",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "memberships_override": {
+        "bob": {
+          "default_tenant_id": "globex",
+          "memberships": [
+            "acme",
+            "globex"
+          ]
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "globex",
+        "roles": [
+          "viewer"
+        ],
+        "source": "offline"
+      },
+      "parity": false,
+      "parity_note": "default_tenant_id selection is library-side"
+    },
+    {
+      "id": "org_id-invariance-single-no-org",
+      "desc": "single membership: no org claim",
+      "who": {
+        "clerk": "alice"
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      },
+      "parity": false,
+      "parity_note": "single-membership selection is library-side"
+    },
+    {
+      "id": "org_id-invariance-single-with-org",
+      "desc": "single membership: a Clerk org_id that would name a different tenant does not move it",
+      "who": {
+        "clerk": "alice",
+        "token": {
+          "extra": {
+            "org_id": "org_globex"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": true,
+        "reason": "allowed",
+        "status": 200,
+        "tenant": "acme",
+        "roles": [
+          "operator"
+        ],
+        "source": "offline"
+      },
+      "parity": false,
+      "parity_note": "single-membership selection is library-side"
+    },
+    {
+      "id": "org_id-invariance-choice-required-with-org",
+      "desc": "409: multiple memberships and no default — a Clerk org_id does not pick one of them",
+      "who": {
+        "clerk": "bob",
+        "token": {
+          "extra": {
+            "org_id": "org_acme"
+          }
+        }
+      },
+      "ask": {
+        "permission": "docs:read"
+      },
+      "expect": {
+        "allow": false,
+        "reason": "tenant_choice_required",
+        "status": 409,
+        "tenant": null,
+        "source": "none"
+      },
+      "parity": false,
+      "parity_note": "tenant_choice_required is library-side"
     },
     {
       "id": "tenant-of-owned-resource",

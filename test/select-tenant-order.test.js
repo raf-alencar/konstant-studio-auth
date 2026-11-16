@@ -95,11 +95,19 @@ test('grant allowed: root member with scope.descendants=true acts on a cl-* bran
   assert.equal(d.viaTenant, ROOT, 'the grant path (root → acme_brand) surfaced as via_tenant');
 });
 
-test('sibling denied: a member of cl-A cannot act on cl-B (platform denies with no_permission)', async () => {
+test('sibling denied (cl-A → cl-B): a member of acme cannot act on globex (platform denies with no_permission)', async () => {
   const { auth, fake, token } = await build();
   // alice is only a member of acme; asking about globex is denied by the platform.
   fake.live = { allow: false, reason: 'no_permission' };
   const d = await auth.authorize({ headers: { authorization: `Bearer ${await token('alice')}` }, permission: 'docs:read', resource: { tenant: GLOBEX } });
+  assert.deepEqual([d.allow, d.reason], [false, 'no_permission']);
+});
+
+test('sibling denied (brand → root): a member of only acme_brand cannot act on root (platform denies with no_permission)', async () => {
+  const { auth, fake, token } = await build();
+  // brandy is a member of the brand child acme_brand ONLY; asking about root goes live and is denied.
+  fake.live = { allow: false, reason: 'no_permission' };
+  const d = await auth.authorize({ headers: { authorization: `Bearer ${await token('brandy')}` }, permission: 'docs:read', resource: { tenant: ROOT } });
   assert.deepEqual([d.allow, d.reason], [false, 'no_permission']);
 });
 
@@ -129,6 +137,18 @@ test('org_id invariance: the same selection outcome with and without a Clerk org
   // Same with a token claiming a completely unrelated org: still the member tenant, not the org.
   const otherOrg = await auth.authorize({ headers: { authorization: `Bearer ${await token('alice', { extra: { org_id: 'org_globex' } })}` }, permission: 'docs:read' });
   assert.deepEqual([otherOrg.tenantId, otherOrg.tenantSource], [ACME, 'single_membership']);
+});
+
+test('org_id invariance: effectivePermissions follows the same rule as authorize (same token with and without org_id → identical result)', async () => {
+  const { auth, fake, token } = await build();
+  const reply = { valid: true, principal: { id: 'p', kind: 'human', user_id: 'user_alice', tenant_id: ACME }, effective: { tenant_id: ACME, reason: null, permissions: [{ permission: 'docs:read', service: 'docs', action: 'read', category: 'read', sensitive: false, scopes: [{ scope: {}, role: 'operator', via_tenant: null }] }] } };
+  fake.override = (path, body) => (path === '/v1/principals/resolve' && body && body.include_effective) ? reply : null;
+  const withoutOrg = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice')}` }, tenant: ACME });
+  const withV1 = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice', { extra: { org_id: 'org_globex' } })}` }, tenant: ACME });
+  const withV2 = await auth.effectivePermissions({ headers: { authorization: `Bearer ${await token('alice', { extra: { o: { id: 'org_globex', rol: 'admin' } } })}` }, tenant: ACME });
+  assert.deepEqual([withoutOrg.ok, withoutOrg.tenantId, withoutOrg.permissions.length], [true, ACME, 1]);
+  assert.deepEqual([withV1.ok, withV1.tenantId, withV1.permissions.length], [true, ACME, 1]);
+  assert.deepEqual([withV2.ok, withV2.tenantId, withV2.permissions.length], [true, ACME, 1]);
 });
 
 // ---- hint refused -----------------------------------------------------------------------------

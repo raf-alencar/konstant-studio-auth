@@ -44,7 +44,7 @@ test('select-tenant: the resolver beats the default, and the audit event says wh
   assert.equal(events.at(-1).tenant_source, 'resolver');
 });
 
-test('select-tenant: req.auth has no orgId/orgRole; the only scoping key is tenantId', async (t) => {
+test('R1: the v1-shaped req.auth carries no orgId: the only scoping key is tenantId', async (t) => {
   const { auth, fake, token } = await build();
   fake.membershipsFor = { [world.principal('bob').user_id]: { default_tenant_id: ACME, memberships: [{ tenant_id: ACME }, { tenant_id: GLOBEX }] } };
   const app = express();
